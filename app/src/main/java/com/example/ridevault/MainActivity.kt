@@ -18,6 +18,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
+import android.mtp.MtpDevice
+
 
 class MainActivity : ComponentActivity() {
 
@@ -29,7 +31,7 @@ class MainActivity : ComponentActivity() {
     private var connectedDevice by mutableStateOf<UsbDevice?>(null)
     private var hasUsbPermission by mutableStateOf(false)
     private var usbConnectionStatus by mutableStateOf("USB connection not opened")
-
+    private var mtpStatus by mutableStateOf("MTP not opened")
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -83,17 +85,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             RideVaultTheme {
                 RideVaultHome(
-
                     device = connectedDevice,
-
                     hasPermission = hasUsbPermission,
-
                     usbConnectionStatus = usbConnectionStatus,
-
+                    mtpStatus = mtpStatus,
                     onRequestPermission = { requestUsbPermission() },
-
-                    onOpenUsbConnection = { openUsbConnection() }
-
+                    onOpenUsbConnection = { openUsbConnection() },
+                    onOpenMtpSession = { openMtpSession() }
                 )
             }
         }
@@ -160,21 +158,44 @@ class MainActivity : ComponentActivity() {
         }
 
     }
+    private fun openMtpSession() {
+        val device = connectedDevice ?: return
+
+        if (!usbManager.hasPermission(device)) {
+            mtpStatus = "USB permission required"
+            return
+        }
+
+        val connection = usbManager.openDevice(device)
+
+        if (connection == null) {
+            mtpStatus = "Could not open USB connection"
+            return
+        }
+
+        val mtpDevice = MtpDevice(device)
+        val opened = mtpDevice.open(connection)
+
+        if (opened) {
+            mtpStatus = "MTP session opened"
+        } else {
+            mtpStatus = "Could not open MTP session"
+        }
+
+        mtpDevice.close()
+        connection.close()
+    }
 }
 
 @Composable
 fun RideVaultHome(
-
     device: UsbDevice?,
-
     hasPermission: Boolean,
-
     usbConnectionStatus: String,
-
+    mtpStatus: String,
     onRequestPermission: () -> Unit,
-
-    onOpenUsbConnection: () -> Unit
-
+    onOpenUsbConnection: () -> Unit,
+    onOpenMtpSession: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -223,22 +244,31 @@ fun RideVaultHome(
                         text = "USB permission granted",
                         style = MaterialTheme.typography.titleMedium
                     )
+
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Button(onClick = onOpenUsbConnection) {
-
                         Text("Open USB Connection")
-
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = usbConnectionStatus,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    Button(onClick = onOpenMtpSession) {
+                        Text("Open MTP Session")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     Text(
-
-                        text = usbConnectionStatus,
-
+                        text = mtpStatus,
                         style = MaterialTheme.typography.bodyLarge
-
                     )
                 } else {
                     Button(onClick = onRequestPermission) {

@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     private var connectedDevice by mutableStateOf<UsbDevice?>(null)
     private var hasUsbPermission by mutableStateOf(false)
+    private var usbConnectionStatus by mutableStateOf("USB connection not opened")
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -82,9 +83,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             RideVaultTheme {
                 RideVaultHome(
+
                     device = connectedDevice,
+
                     hasPermission = hasUsbPermission,
-                    onRequestPermission = { requestUsbPermission() }
+
+                    usbConnectionStatus = usbConnectionStatus,
+
+                    onRequestPermission = { requestUsbPermission() },
+
+                    onOpenUsbConnection = { openUsbConnection() }
+
                 )
             }
         }
@@ -124,13 +133,48 @@ class MainActivity : ComponentActivity() {
 
         usbManager.requestPermission(device, permissionIntent)
     }
+    private fun openUsbConnection() {
+
+        val device = connectedDevice ?: return
+
+        if (!usbManager.hasPermission(device)) {
+
+            usbConnectionStatus = "USB permission required"
+
+            return
+
+        }
+
+        val connection = usbManager.openDevice(device)
+
+        if (connection == null) {
+
+            usbConnectionStatus = "Could not open USB connection"
+
+        } else {
+
+            usbConnectionStatus = "USB connection opened"
+
+            connection.close()
+
+        }
+
+    }
 }
 
 @Composable
 fun RideVaultHome(
+
     device: UsbDevice?,
+
     hasPermission: Boolean,
-    onRequestPermission: () -> Unit
+
+    usbConnectionStatus: String,
+
+    onRequestPermission: () -> Unit,
+
+    onOpenUsbConnection: () -> Unit
+
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -178,6 +222,23 @@ fun RideVaultHome(
                     Text(
                         text = "USB permission granted",
                         style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(onClick = onOpenUsbConnection) {
+
+                        Text("Open USB Connection")
+
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+
+                        text = usbConnectionStatus,
+
+                        style = MaterialTheme.typography.bodyLarge
+
                     )
                 } else {
                     Button(onClick = onRequestPermission) {

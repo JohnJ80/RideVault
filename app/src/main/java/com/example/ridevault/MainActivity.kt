@@ -194,11 +194,23 @@ class MainActivity : ComponentActivity() {
 
                 } else {
 
-                    mtpStatus =
-                        "MTP: ${info.manufacturer} ${info.model}"
                     val storageIds = mtpDevice.storageIds ?: intArrayOf()
-                    mtpStatus =
-                        "MTP: ${info.manufacturer} ${info.model}; storages=${storageIds.size}"
+
+                    if (storageIds.isEmpty()) {
+
+                        mtpStatus =
+                            "MTP: ${info.manufacturer} ${info.model}; storages=0"
+
+                    } else {
+
+                        val storageInfo = mtpDevice.getStorageInfo(storageIds[0])
+
+                        mtpStatus =
+                            "MTP: ${info.manufacturer} ${info.model}; " +
+                                    "storages=${storageIds.size}; " +
+                                    "storage=${storageInfo?.description ?: "unknown"}"
+
+                    }
 
                 }
 

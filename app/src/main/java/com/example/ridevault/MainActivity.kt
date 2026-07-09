@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
 import android.mtp.MtpDevice
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 
 class MainActivity : ComponentActivity() {
@@ -30,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     private var connectedDevice by mutableStateOf<UsbDevice?>(null)
     private var hasUsbPermission by mutableStateOf(false)
+    private var usbInspectionReport by mutableStateOf("")
     private var usbConnectionStatus by mutableStateOf("USB connection not opened")
     private var mtpStatus by mutableStateOf("MTP not opened")
     private val usbReceiver = object : BroadcastReceiver() {
@@ -89,9 +92,11 @@ class MainActivity : ComponentActivity() {
                     hasPermission = hasUsbPermission,
                     usbConnectionStatus = usbConnectionStatus,
                     mtpStatus = mtpStatus,
+                    usbInspectionReport = usbInspectionReport,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenUsbConnection = { openUsbConnection() },
                     onOpenMtpSession = { openMtpSession() }
+
                 )
             }
         }
@@ -110,6 +115,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshUsbState() {
         val device = findGarminDevice()
         connectedDevice = device
+        usbInspectionReport = device?.let { UsbInspector.inspect(it) } ?: ""
         hasUsbPermission = device?.let { usbManager.hasPermission(it) } ?: false
     }
 
@@ -193,6 +199,7 @@ fun RideVaultHome(
     hasPermission: Boolean,
     usbConnectionStatus: String,
     mtpStatus: String,
+    usbInspectionReport: String,
     onRequestPermission: () -> Unit,
     onOpenUsbConnection: () -> Unit,
     onOpenMtpSession: () -> Unit
@@ -204,6 +211,7 @@ fun RideVaultHome(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
@@ -236,6 +244,12 @@ fun RideVaultHome(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 DeviceInfoTable(device)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = usbInspectionReport,
+                    style = MaterialTheme.typography.bodySmall
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
 

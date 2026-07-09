@@ -183,9 +183,32 @@ class MainActivity : ComponentActivity() {
         val opened = mtpDevice.open(connection)
 
         if (opened) {
-            mtpStatus = "MTP session opened"
+
+            try {
+
+                val info = mtpDevice.deviceInfo
+
+                if (info == null) {
+
+                    mtpStatus = "MTP opened, but no DeviceInfo"
+
+                } else {
+
+                    mtpStatus =
+                        "MTP: ${info.manufacturer} ${info.model}"
+
+                }
+
+            } catch (e: Exception) {
+
+                mtpStatus = "DeviceInfo exception: ${e.javaClass.simpleName}"
+
+            }
+
         } else {
+
             mtpStatus = "Could not open MTP session"
+
         }
 
         mtpDevice.close()

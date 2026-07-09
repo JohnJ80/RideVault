@@ -21,6 +21,7 @@ import com.example.ridevault.ui.theme.RideVaultTheme
 import android.mtp.MtpDevice
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import android.mtp.MtpConstants
 
 
 class MainActivity : ComponentActivity() {
@@ -203,13 +204,27 @@ class MainActivity : ComponentActivity() {
 
                     } else {
 
-                        val storageInfo = mtpDevice.getStorageInfo(storageIds[0])
+                        val storageId = storageIds[0]
+                        val storageInfo = mtpDevice.getStorageInfo(storageId)
+
+                        val rootHandlesZero =
+                            mtpDevice.getObjectHandles(
+                                storageId,
+                                MtpConstants.FORMAT_UNDEFINED,
+                                0
+                            ) ?: intArrayOf()
+
+                        val rootHandlesAll =
+                            mtpDevice.getObjectHandles(
+                                storageId,
+                                MtpConstants.FORMAT_UNDEFINED,
+                                -1
+                            ) ?: intArrayOf()
 
                         mtpStatus =
                             "MTP: ${info.manufacturer} ${info.model}; " +
-                                    "storages=${storageIds.size}; " +
-                                    "storage=${storageInfo?.description ?: "unknown"}"
-
+                                    "storage=${storageInfo?.description ?: "unknown"}; " +
+                                    "root0=${rootHandlesZero.size}; all=${rootHandlesAll.size}"
                     }
 
                 }

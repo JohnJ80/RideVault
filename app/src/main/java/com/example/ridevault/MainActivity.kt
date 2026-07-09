@@ -196,6 +196,9 @@ class MainActivity : ComponentActivity() {
 
                     mtpStatus =
                         "MTP: ${info.manufacturer} ${info.model}"
+                    val storageIds = mtpDevice.storageIds ?: intArrayOf()
+                    mtpStatus =
+                        "MTP: ${info.manufacturer} ${info.model}; storages=${storageIds.size}"
 
                 }
 

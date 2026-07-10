@@ -7,22 +7,21 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.mtp.MtpDevice
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
-import android.mtp.MtpDevice
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import android.mtp.MtpConstants
-
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
 
@@ -36,6 +35,8 @@ class MainActivity : ComponentActivity() {
     private var usbInspectionReport by mutableStateOf("")
     private var usbConnectionStatus by mutableStateOf("USB connection not opened")
     private var mtpStatus by mutableStateOf("MTP not opened")
+    private var mtpBusy by mutableStateOf(false)
+
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -48,11 +49,13 @@ class MainActivity : ComponentActivity() {
                             intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                         }
 
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    val granted =
+                        intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
 
                     if (device != null && granted) {
                         connectedDevice = device
                         hasUsbPermission = true
+                        openUsbConnection()
                     } else {
                         refreshUsbState()
                     }
@@ -93,11 +96,10 @@ class MainActivity : ComponentActivity() {
                     hasPermission = hasUsbPermission,
                     usbConnectionStatus = usbConnectionStatus,
                     mtpStatus = mtpStatus,
+                    mtpBusy = mtpBusy,
                     usbInspectionReport = usbInspectionReport,
                     onRequestPermission = { requestUsbPermission() },
-                    onOpenUsbConnection = { openUsbConnection() },
-                    onOpenMtpSession = { openMtpSession() }
-
+                    onOpenMtpSession = { openMtpSessionInBackground() }
                 )
             }
         }
@@ -118,6 +120,14 @@ class MainActivity : ComponentActivity() {
         connectedDevice = device
         usbInspectionReport = device?.let { UsbInspector.inspect(it) } ?: ""
         hasUsbPermission = device?.let { usbManager.hasPermission(it) } ?: false
+
+        if (device == null) {
+            usbConnectionStatus = "USB connection not opened"
+            mtpStatus = "MTP not opened"
+            mtpBusy = false
+        } else if (hasUsbPermission) {
+            openUsbConnection()
+        }
     }
 
     private fun findGarminDevice(): UsbDevice? {
@@ -138,111 +148,100 @@ class MainActivity : ComponentActivity() {
 
         usbManager.requestPermission(device, permissionIntent)
     }
+
     private fun openUsbConnection() {
-
         val device = connectedDevice ?: return
 
         if (!usbManager.hasPermission(device)) {
-
             usbConnectionStatus = "USB permission required"
-
             return
-
         }
 
         val connection = usbManager.openDevice(device)
 
         if (connection == null) {
-
             usbConnectionStatus = "Could not open USB connection"
-
         } else {
-
             usbConnectionStatus = "USB connection opened"
-
             connection.close()
-
         }
-
     }
-    private fun openMtpSession() {
-        val device = connectedDevice ?: return
+
+    private fun openMtpSessionInBackground() {
+        if (mtpBusy) return
+
+        mtpBusy = true
+        mtpStatus = "Starting MTP..."
+
+        thread(start = true) {
+            val result = openMtpSessionWorker()
+
+            runOnUiThread {
+                mtpStatus = result
+                mtpBusy = false
+            }
+        }
+    }
+
+    private fun openMtpSessionWorker(): String {
+        val device = connectedDevice ?: return "No Garmin device connected"
 
         if (!usbManager.hasPermission(device)) {
-            mtpStatus = "USB permission required"
-            return
+            return "USB permission required"
         }
+
+        runOnUiThread { mtpStatus = "Opening USB connection..." }
 
         val connection = usbManager.openDevice(device)
-
-        if (connection == null) {
-            mtpStatus = "Could not open USB connection"
-            return
-        }
+            ?: return "Could not open USB connection"
 
         val mtpDevice = MtpDevice(device)
-        val opened = mtpDevice.open(connection)
 
-        if (opened) {
+        try {
+            runOnUiThread { mtpStatus = "Opening MTP session..." }
 
-            try {
+            val opened = mtpDevice.open(connection)
 
-                val info = mtpDevice.deviceInfo
-
-                if (info == null) {
-
-                    mtpStatus = "MTP opened, but no DeviceInfo"
-
-                } else {
-
-                    val storageIds = mtpDevice.storageIds ?: intArrayOf()
-
-                    if (storageIds.isEmpty()) {
-
-                        mtpStatus =
-                            "MTP: ${info.manufacturer} ${info.model}; storages=0"
-
-                    } else {
-
-                        val storageId = storageIds[0]
-                        val storageInfo = mtpDevice.getStorageInfo(storageId)
-
-                        val rootHandlesZero =
-                            mtpDevice.getObjectHandles(
-                                storageId,
-                                MtpConstants.FORMAT_UNDEFINED,
-                                0
-                            ) ?: intArrayOf()
-
-                        val rootHandlesAll =
-                            mtpDevice.getObjectHandles(
-                                storageId,
-                                MtpConstants.FORMAT_UNDEFINED,
-                                -1
-                            ) ?: intArrayOf()
-
-                        mtpStatus =
-                            "MTP: ${info.manufacturer} ${info.model}; " +
-                                    "storage=${storageInfo?.description ?: "unknown"}; " +
-                                    "root0=${rootHandlesZero.size}; all=${rootHandlesAll.size}"
-                    }
-
-                }
-
-            } catch (e: Exception) {
-
-                mtpStatus = "DeviceInfo exception: ${e.javaClass.simpleName}"
-
+            if (!opened) {
+                return "Could not open MTP session"
             }
 
-        } else {
+            runOnUiThread { mtpStatus = "Reading DeviceInfo..." }
 
-            mtpStatus = "Could not open MTP session"
+            val info = mtpDevice.deviceInfo
 
+            if (info == null) {
+                return "MTP opened, but no DeviceInfo"
+            }
+
+            runOnUiThread { mtpStatus = "Reading storage IDs..." }
+
+            val storageIds = mtpDevice.storageIds ?: intArrayOf()
+
+            if (storageIds.isEmpty()) {
+                return "MTP: ${info.manufacturer} ${info.model}; storages=0"
+            }
+
+            val storageId = storageIds[0]
+
+            runOnUiThread { mtpStatus = "Reading StorageInfo..." }
+
+            val storageInfo = mtpDevice.getStorageInfo(storageId)
+
+            return "MTP: ${info.manufacturer} ${info.model}; " +
+                    "storages=${storageIds.size}; " +
+                    "storage=${storageInfo?.description ?: "unknown"}"
+
+        } catch (e: Exception) {
+            return "MTP exception: ${e.javaClass.simpleName}"
+        } finally {
+            try {
+                mtpDevice.close()
+            } catch (_: Exception) {
+            }
+
+            connection.close()
         }
-
-        mtpDevice.close()
-        connection.close()
     }
 }
 
@@ -252,9 +251,9 @@ fun RideVaultHome(
     hasPermission: Boolean,
     usbConnectionStatus: String,
     mtpStatus: String,
+    mtpBusy: Boolean,
     usbInspectionReport: String,
     onRequestPermission: () -> Unit,
-    onOpenUsbConnection: () -> Unit,
     onOpenMtpSession: () -> Unit
 ) {
     Surface(
@@ -272,6 +271,11 @@ fun RideVaultHome(
             Text(
                 text = "RideVault",
                 style = MaterialTheme.typography.headlineLarge
+            )
+
+            Text(
+                text = "Rev 0.0.6",
+                style = MaterialTheme.typography.bodyMedium
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -297,6 +301,7 @@ fun RideVaultHome(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 DeviceInfoTable(device)
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
@@ -312,12 +317,6 @@ fun RideVaultHome(
                         style = MaterialTheme.typography.titleMedium
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(onClick = onOpenUsbConnection) {
-                        Text("Open USB Connection")
-                    }
-
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
@@ -327,8 +326,11 @@ fun RideVaultHome(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Button(onClick = onOpenMtpSession) {
-                        Text("Open MTP Session")
+                    Button(
+                        onClick = onOpenMtpSession,
+                        enabled = !mtpBusy
+                    ) {
+                        Text(if (mtpBusy) "MTP Working..." else "Open MTP Session")
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))

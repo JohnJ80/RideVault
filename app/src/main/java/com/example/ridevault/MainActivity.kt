@@ -235,19 +235,57 @@ class MainActivity : ComponentActivity() {
             val rootHandles =
                 mtpDevice.getObjectHandles(storageId, 0, -1) ?: intArrayOf()
 
-            val rootSummary = rootHandles
+            val rootObjects = mutableListOf<Pair<Int, String>>()
+
+            for (handle in rootHandles) {
+                val objectInfo = mtpDevice.getObjectInfo(handle)
+                if (objectInfo != null) {
+                    rootObjects.add(handle to objectInfo.name)
+                }
+            }
+
+            val rootSummary = rootObjects
                 .take(5)
-                .mapIndexed { index, handle ->
-                    val objectInfo = mtpDevice.getObjectInfo(handle)
-                    val name = objectInfo?.name ?: "unknown"
-                    "${index + 1}: $name"
+                .mapIndexed { index, item ->
+                    "${index + 1}: ${item.second}"
                 }
                 .joinToString("; ")
+
+            val garminHandle = rootObjects
+                .firstOrNull { it.second.equals("Garmin", ignoreCase = true) }
+                ?.first
+
+            if (garminHandle == null) {
+                return "MTP: ${info.manufacturer} ${info.model}; " +
+                        "storage=${storageInfo?.description ?: "unknown"}; " +
+                        "root=${rootHandles.size}; " +
+                        rootSummary + "; Garmin folder not found"
+            }
+
+            runOnUiThread {
+                mtpStatus = "Reading Garmin folder..."
+            }
+
+            val garminHandles =
+                mtpDevice.getObjectHandles(storageId, 0, garminHandle) ?: intArrayOf()
+
+            val garminNames = mutableListOf<String>()
+
+            for (handle in garminHandles.take(12)) {
+                val objectInfo = mtpDevice.getObjectInfo(handle)
+                if (objectInfo != null) {
+                    garminNames.add(objectInfo.name)
+                }
+            }
+
+            val garminSummary = garminNames.joinToString("; ")
 
             return "MTP: ${info.manufacturer} ${info.model}; " +
                     "storage=${storageInfo?.description ?: "unknown"}; " +
                     "root=${rootHandles.size}; " +
-                    rootSummary
+                    rootSummary + "; " +
+                    "Garmin children=${garminHandles.size}; " +
+                    garminSummary
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"

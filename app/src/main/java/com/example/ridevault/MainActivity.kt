@@ -23,6 +23,13 @@ import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
 import kotlin.concurrent.thread
 
+data class FitFileInfo(
+    val handle: Int,
+    val name: String,
+    val sizeBytes: Long,
+    val modifiedEpochSeconds: Long
+)
+
 class MainActivity : ComponentActivity() {
 
     private val garminVendorId = 0x091e
@@ -55,7 +62,7 @@ class MainActivity : ComponentActivity() {
                     if (device != null && granted) {
                         connectedDevice = device
                         hasUsbPermission = true
-                        openUsbConnection()
+                        usbConnectionStatus = "USB ready"
                     } else {
                         refreshUsbState()
                     }
@@ -97,7 +104,6 @@ class MainActivity : ComponentActivity() {
                     usbConnectionStatus = usbConnectionStatus,
                     mtpStatus = mtpStatus,
                     mtpBusy = mtpBusy,
-                    usbInspectionReport = usbInspectionReport,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenMtpSession = { openMtpSessionInBackground() }
                 )
@@ -122,11 +128,13 @@ class MainActivity : ComponentActivity() {
         hasUsbPermission = device?.let { usbManager.hasPermission(it) } ?: false
 
         if (device == null) {
-            usbConnectionStatus = "USB connection not opened"
+            usbConnectionStatus = "USB not connected"
             mtpStatus = "MTP not opened"
             mtpBusy = false
         } else if (hasUsbPermission) {
-            openUsbConnection()
+            usbConnectionStatus = "USB ready"
+        } else {
+            usbConnectionStatus = "USB permission required"
         }
     }
 
@@ -149,23 +157,6 @@ class MainActivity : ComponentActivity() {
         usbManager.requestPermission(device, permissionIntent)
     }
 
-    private fun openUsbConnection() {
-        val device = connectedDevice ?: return
-
-        if (!usbManager.hasPermission(device)) {
-            usbConnectionStatus = "USB permission required"
-            return
-        }
-
-        val connection = usbManager.openDevice(device)
-
-        if (connection == null) {
-            usbConnectionStatus = "Could not open USB connection"
-        } else {
-            usbConnectionStatus = "USB connection opened"
-            connection.close()
-        }
-    }
 
     private fun openMtpSessionInBackground() {
         if (mtpBusy) return
@@ -208,18 +199,38 @@ class MainActivity : ComponentActivity() {
 
             runOnUiThread { mtpStatus = "Reading DeviceInfo..." }
 
-            val info = mtpDevice.deviceInfo
+            var info = mtpDevice.deviceInfo
+            var retryCount = 0
+
+            while (info == null && retryCount < 4) {
+                Thread.sleep(250)
+                retryCount++
+                runOnUiThread {
+                    mtpStatus = "Reading DeviceInfo... retry $retryCount"
+                }
+                info = mtpDevice.deviceInfo
+            }
 
             if (info == null) {
-                return "MTP opened, but no DeviceInfo"
+                return "MTP opened, but no DeviceInfo after retries"
             }
 
             runOnUiThread { mtpStatus = "Reading storage IDs..." }
 
-            val storageIds = mtpDevice.storageIds ?: intArrayOf()
+            var storageIds = mtpDevice.storageIds ?: intArrayOf()
+            var storageRetryCount = 0
+
+            while (storageIds.isEmpty() && storageRetryCount < 4) {
+                Thread.sleep(250)
+                storageRetryCount++
+                runOnUiThread {
+                    mtpStatus = "Reading storage IDs... retry $storageRetryCount"
+                }
+                storageIds = mtpDevice.storageIds ?: intArrayOf()
+            }
 
             if (storageIds.isEmpty()) {
-                return "MTP: ${info.manufacturer} ${info.model}; storages=0"
+                return "MTP: ${info.manufacturer} ${info.model}; storages=0 after retries"
             }
 
             val storageId = storageIds[0]
@@ -269,23 +280,80 @@ class MainActivity : ComponentActivity() {
             val garminHandles =
                 mtpDevice.getObjectHandles(storageId, 0, garminHandle) ?: intArrayOf()
 
-            val garminNames = mutableListOf<String>()
+            val garminObjects = mutableListOf<Pair<Int, String>>()
 
-            for (handle in garminHandles.take(12)) {
+            for (handle in garminHandles) {
                 val objectInfo = mtpDevice.getObjectInfo(handle)
                 if (objectInfo != null) {
-                    garminNames.add(objectInfo.name)
+                    garminObjects.add(handle to objectInfo.name)
                 }
             }
 
-            val garminSummary = garminNames.joinToString("; ")
+            val garminSummary = garminObjects
+                .take(12)
+                .joinToString("; ") { it.second }
+
+            val activitiesHandle = garminObjects
+                .firstOrNull { it.second.equals("Activities", ignoreCase = true) }
+                ?.first
+
+            if (activitiesHandle == null) {
+                return "MTP: ${info.manufacturer} ${info.model}; " +
+                        "storage=${storageInfo?.description ?: "unknown"}; " +
+                        "root=${rootHandles.size}; " +
+                        rootSummary + "; " +
+                        "Garmin children=${garminHandles.size}; " +
+                        garminSummary + "; Activities folder not found"
+            }
+
+            runOnUiThread {
+                mtpStatus = "Reading Activities folder..."
+            }
+
+            val activityHandles =
+                mtpDevice.getObjectHandles(storageId, 0, activitiesHandle) ?: intArrayOf()
+
+            val fitFiles = mutableListOf<FitFileInfo>()
+
+            for (handle in activityHandles) {
+                val objectInfo = mtpDevice.getObjectInfo(handle)
+
+                if (objectInfo != null && objectInfo.name.endsWith(".fit", ignoreCase = true)) {
+                    fitFiles.add(
+                        FitFileInfo(
+                            handle = handle,
+                            name = objectInfo.name,
+                            sizeBytes = objectInfo.compressedSize.toLong(),
+                            modifiedEpochSeconds = objectInfo.dateModified
+                        )
+                    )
+                }
+            }
+
+            fitFiles.sortByDescending { it.name }
+
+            val newestSummary = fitFiles
+                .take(5)
+                .joinToString("; ") { file ->
+                    "${file.name} (${formatFileSize(file.sizeBytes)})"
+                }
+
+            val oldestSummary = fitFiles
+                .takeLast(5)
+                .reversed()
+                .joinToString("; ") { file ->
+                    "${file.name} (${formatFileSize(file.sizeBytes)})"
+                }
+
+            val zeroByteCount = fitFiles.count { it.sizeBytes == 0L }
+            val verySmallCount = fitFiles.count { it.sizeBytes in 1L..1023L }
 
             return "MTP: ${info.manufacturer} ${info.model}; " +
                     "storage=${storageInfo?.description ?: "unknown"}; " +
-                    "root=${rootHandles.size}; " +
-                    rootSummary + "; " +
-                    "Garmin children=${garminHandles.size}; " +
-                    garminSummary
+                    "FIT files=${fitFiles.size}; " +
+                    "zero-byte=$zeroByteCount; under-1KB=$verySmallCount; " +
+                    "newest: $newestSummary; " +
+                    "oldest: $oldestSummary"
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"
@@ -307,7 +375,6 @@ fun RideVaultHome(
     usbConnectionStatus: String,
     mtpStatus: String,
     mtpBusy: Boolean,
-    usbInspectionReport: String,
     onRequestPermission: () -> Unit,
     onOpenMtpSession: () -> Unit
 ) {
@@ -329,7 +396,7 @@ fun RideVaultHome(
             )
 
             Text(
-                text = "Rev 0.0.6",
+                text = "Rev 0.0.12",
                 style = MaterialTheme.typography.bodyMedium
             )
 
@@ -353,18 +420,7 @@ fun RideVaultHome(
                     style = MaterialTheme.typography.titleLarge
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                DeviceInfoTable(device)
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = usbInspectionReport,
-                    style = MaterialTheme.typography.bodySmall
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 if (hasPermission) {
                     Text(
@@ -428,5 +484,14 @@ fun InfoRow(label: String, value: String) {
             text = value,
             style = MaterialTheme.typography.bodyMedium
         )
+    }
+}
+
+
+fun formatFileSize(bytes: Long): String {
+    return when {
+        bytes >= 1_000_000L -> String.format("%.1f MB", bytes / 1_000_000.0)
+        bytes >= 1_000L -> String.format("%.1f KB", bytes / 1_000.0)
+        else -> "$bytes B"
     }
 }

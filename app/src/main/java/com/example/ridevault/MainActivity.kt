@@ -228,9 +228,26 @@ class MainActivity : ComponentActivity() {
 
             val storageInfo = mtpDevice.getStorageInfo(storageId)
 
+            runOnUiThread {
+                mtpStatus = "Reading root object handles..."
+            }
+
+            val rootHandles =
+                mtpDevice.getObjectHandles(storageId, 0, -1) ?: intArrayOf()
+
+            val rootSummary = rootHandles
+                .take(5)
+                .mapIndexed { index, handle ->
+                    val objectInfo = mtpDevice.getObjectInfo(handle)
+                    val name = objectInfo?.name ?: "unknown"
+                    "${index + 1}: $name"
+                }
+                .joinToString("; ")
+
             return "MTP: ${info.manufacturer} ${info.model}; " +
-                    "storages=${storageIds.size}; " +
-                    "storage=${storageInfo?.description ?: "unknown"}"
+                    "storage=${storageInfo?.description ?: "unknown"}; " +
+                    "root=${rootHandles.size}; " +
+                    rootSummary
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"

@@ -13,6 +13,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -431,6 +432,10 @@ fun RideVaultHome(
     onRequestPermission: () -> Unit,
     onOpenMtpSession: () -> Unit
 ) {
+    var selectedFile by remember {
+        mutableStateOf<FitFileInfo?>(null)
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -452,7 +457,7 @@ fun RideVaultHome(
                 )
 
                 Text(
-                    text = "Rev 0.0.17",
+                    text = "Rev 0.0.18",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -551,7 +556,11 @@ fun RideVaultHome(
                             key = { it.handle }
                         ) { file ->
                             Card(
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedFile = file
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -584,6 +593,51 @@ fun RideVaultHome(
                 }
             }
         }
+    }
+
+    selectedFile?.let { file ->
+        AlertDialog(
+            onDismissRequest = { selectedFile = null },
+            title = {
+                Text("Activity")
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row {
+                        Text(
+                            text = "Activity time:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(formatFitTimestamp(file.name))
+                    }
+
+                    Row {
+                        Text(
+                            text = "Filename:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(file.name)
+                    }
+
+                    Row {
+                        Text(
+                            text = "Size:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(formatFileSize(file.sizeBytes))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { selectedFile = null }
+                ) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
 

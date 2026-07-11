@@ -2,6 +2,7 @@ package com.example.ridevault
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -10,6 +11,8 @@ import android.hardware.usb.UsbManager
 import android.mtp.MtpDevice
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -50,6 +53,8 @@ class MainActivity : ComponentActivity() {
     private var fitFiles by mutableStateOf<List<FitFileInfo>>(emptyList())
     private var activityScanCurrent by mutableIntStateOf(0)
     private var activityScanTotal by mutableIntStateOf(0)
+    private var downloadBusy by mutableStateOf(false)
+    private var downloadStatus by mutableStateOf("")
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -114,8 +119,13 @@ class MainActivity : ComponentActivity() {
                     fitFiles = fitFiles,
                     activityScanCurrent = activityScanCurrent,
                     activityScanTotal = activityScanTotal,
+                    downloadBusy = downloadBusy,
+                    downloadStatus = downloadStatus,
                     onRequestPermission = { requestUsbPermission() },
-                    onOpenMtpSession = { openMtpSessionInBackground() }
+                    onOpenMtpSession = { openMtpSessionInBackground() },
+                    onDownloadActivity = { file ->
+                        downloadActivityInBackground(file)
+                    }
                 )
             }
         }
@@ -185,6 +195,204 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 mtpStatus = result
                 mtpBusy = false
+            }
+        }
+    }
+
+    private fun downloadActivityInBackground(file: FitFileInfo) {
+        if (downloadBusy || mtpBusy) return
+
+        downloadBusy = true
+        downloadStatus = "Preparing download..."
+
+        thread(start = true) {
+            val result = downloadActivityWorker(file)
+
+            runOnUiThread {
+                downloadStatus = result
+                downloadBusy = false
+            }
+        }
+    }
+
+    private fun downloadActivityWorker(file: FitFileInfo): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return "Downloads require Android 10 or newer"
+        }
+
+        val device = connectedDevice
+            ?: return "No Garmin device connected"
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required"
+        }
+
+        val currentPath =
+            "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities/"
+        val previousPath =
+            "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities-Previous/"
+
+        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+
+        try {
+            rotateDownloadSet(
+                collection = collection,
+                currentPath = currentPath,
+                previousPath = previousPath
+            )
+        } catch (e: Exception) {
+            return "Could not prepare download folders: " +
+                    e.javaClass.simpleName
+        }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection"
+
+        val mtpDevice = MtpDevice(device)
+
+        try {
+            if (!mtpDevice.open(connection)) {
+                return "Could not open MTP session"
+            }
+
+            runOnUiThread {
+                downloadStatus = "Downloading ${file.name}..."
+            }
+
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(
+                    MediaStore.Downloads.MIME_TYPE,
+                    "application/octet-stream"
+                )
+                put(MediaStore.Downloads.RELATIVE_PATH, currentPath)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+
+            val outputUri = contentResolver.insert(
+                collection,
+                values
+            ) ?: return "Could not create destination file"
+
+            val imported = try {
+                contentResolver
+                    .openFileDescriptor(outputUri, "w")
+                    ?.use { descriptor ->
+                        mtpDevice.importFile(
+                            file.handle,
+                            descriptor
+                        )
+                    } ?: false
+            } catch (_: Exception) {
+                false
+            }
+
+            if (!imported) {
+                contentResolver.delete(outputUri, null, null)
+                return "Download failed: ${file.name}"
+            }
+
+            val completedValues = ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }
+
+            contentResolver.update(
+                outputUri,
+                completedValues,
+                null,
+                null
+            )
+
+            val savedSize = contentResolver
+                .openFileDescriptor(outputUri, "r")
+                ?.use { descriptor ->
+                    descriptor.statSize
+                }
+                ?: -1L
+
+            if (savedSize >= 0L && savedSize != file.sizeBytes) {
+                return "Downloaded, but size mismatch: expected " +
+                        "${formatFileSize(file.sizeBytes)}, got " +
+                        formatFileSize(savedSize)
+            }
+
+            return "Downloaded ${file.name} to " +
+                    "Downloads/RideVault/Activities"
+
+        } catch (e: Exception) {
+            return "Download exception: ${e.javaClass.simpleName}"
+        } finally {
+            try {
+                mtpDevice.close()
+            } catch (_: Exception) {
+            }
+
+            connection.close()
+        }
+    }
+
+    private fun rotateDownloadSet(
+        collection: android.net.Uri,
+        currentPath: String,
+        previousPath: String
+    ) {
+        val projection = arrayOf(MediaStore.Downloads._ID)
+
+        // Remove the download set from two sessions ago.
+        contentResolver.query(
+            collection,
+            projection,
+            "${MediaStore.Downloads.RELATIVE_PATH} = ?",
+            arrayOf(previousPath),
+            null
+        )?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(
+                MediaStore.Downloads._ID
+            )
+
+            while (cursor.moveToNext()) {
+                val itemUri =
+                    android.content.ContentUris.withAppendedId(
+                        collection,
+                        cursor.getLong(idColumn)
+                    )
+
+                contentResolver.delete(itemUri, null, null)
+            }
+        }
+
+        // Move the current download set into Activities-Previous.
+        contentResolver.query(
+            collection,
+            projection,
+            "${MediaStore.Downloads.RELATIVE_PATH} = ?",
+            arrayOf(currentPath),
+            null
+        )?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(
+                MediaStore.Downloads._ID
+            )
+
+            while (cursor.moveToNext()) {
+                val itemUri =
+                    android.content.ContentUris.withAppendedId(
+                        collection,
+                        cursor.getLong(idColumn)
+                    )
+
+                val moveValues = ContentValues().apply {
+                    put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        previousPath
+                    )
+                }
+
+                contentResolver.update(
+                    itemUri,
+                    moveValues,
+                    null,
+                    null
+                )
             }
         }
     }
@@ -429,8 +637,11 @@ fun RideVaultHome(
     fitFiles: List<FitFileInfo>,
     activityScanCurrent: Int,
     activityScanTotal: Int,
+    downloadBusy: Boolean,
+    downloadStatus: String,
     onRequestPermission: () -> Unit,
-    onOpenMtpSession: () -> Unit
+    onOpenMtpSession: () -> Unit,
+    onDownloadActivity: (FitFileInfo) -> Unit
 ) {
     var selectedFile by remember {
         mutableStateOf<FitFileInfo?>(null)
@@ -457,7 +668,7 @@ fun RideVaultHome(
                 )
 
                 Text(
-                    text = "Rev 0.0.18",
+                    text = "Rev 0.0.19",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -502,6 +713,15 @@ fun RideVaultHome(
                     Text(
                         if (mtpBusy) "Loading..."
                         else "Refresh"
+                    )
+                }
+
+                if (downloadStatus.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = downloadStatus,
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
 
@@ -558,7 +778,9 @@ fun RideVaultHome(
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
+                                    .clickable(
+                                        enabled = !downloadBusy && !mtpBusy
+                                    ) {
                                         selectedFile = file
                                     }
                             ) {
@@ -631,10 +853,21 @@ fun RideVaultHome(
                 }
             },
             confirmButton = {
+                Button(
+                    onClick = {
+                        selectedFile = null
+                        onDownloadActivity(file)
+                    },
+                    enabled = !downloadBusy && !mtpBusy
+                ) {
+                    Text("Download")
+                }
+            },
+            dismissButton = {
                 TextButton(
                     onClick = { selectedFile = null }
                 ) {
-                    Text("Close")
+                    Text("Cancel")
                 }
             }
         )

@@ -13,8 +13,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,6 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
 import kotlin.concurrent.thread
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 data class FitFileInfo(
     val handle: Int,
@@ -43,6 +46,9 @@ class MainActivity : ComponentActivity() {
     private var usbConnectionStatus by mutableStateOf("USB connection not opened")
     private var mtpStatus by mutableStateOf("MTP not opened")
     private var mtpBusy by mutableStateOf(false)
+    private var fitFiles by mutableStateOf<List<FitFileInfo>>(emptyList())
+    private var activityScanCurrent by mutableIntStateOf(0)
+    private var activityScanTotal by mutableIntStateOf(0)
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -104,6 +110,9 @@ class MainActivity : ComponentActivity() {
                     usbConnectionStatus = usbConnectionStatus,
                     mtpStatus = mtpStatus,
                     mtpBusy = mtpBusy,
+                    fitFiles = fitFiles,
+                    activityScanCurrent = activityScanCurrent,
+                    activityScanTotal = activityScanTotal,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenMtpSession = { openMtpSessionInBackground() }
                 )
@@ -131,6 +140,9 @@ class MainActivity : ComponentActivity() {
             usbConnectionStatus = "USB not connected"
             mtpStatus = "MTP not opened"
             mtpBusy = false
+            fitFiles = emptyList()
+            activityScanCurrent = 0
+            activityScanTotal = 0
         } else if (hasUsbPermission) {
             usbConnectionStatus = "USB ready"
         } else {
@@ -163,6 +175,8 @@ class MainActivity : ComponentActivity() {
 
         mtpBusy = true
         mtpStatus = "Starting MTP..."
+        activityScanCurrent = 0
+        activityScanTotal = 0
 
         thread(start = true) {
             val result = openMtpSessionWorker()
@@ -310,50 +324,86 @@ class MainActivity : ComponentActivity() {
                 mtpStatus = "Reading Activities folder..."
             }
 
-            val activityHandles =
-                mtpDevice.getObjectHandles(storageId, 0, activitiesHandle) ?: intArrayOf()
+            val activityHandleSet = linkedSetOf<Int>()
 
+            repeat(4) { attempt ->
+                val handles =
+                    mtpDevice.getObjectHandles(
+                        storageId,
+                        0,
+                        activitiesHandle
+                    ) ?: intArrayOf()
+
+                activityHandleSet.addAll(handles.toList())
+
+                runOnUiThread {
+                    mtpStatus =
+                        "Reading activity index... " +
+                                "pass ${attempt + 1} of 4; " +
+                                "${activityHandleSet.size} found"
+                }
+
+                if (attempt < 3) {
+                    Thread.sleep(250)
+                }
+            }
+
+            val activityHandles = activityHandleSet.toIntArray()
             val fitFiles = mutableListOf<FitFileInfo>()
+            var unreadableCount = 0
 
-            for (handle in activityHandles) {
-                val objectInfo = mtpDevice.getObjectInfo(handle)
+            runOnUiThread {
+                activityScanCurrent = 0
+                activityScanTotal = activityHandles.size
+            }
 
-                if (objectInfo != null && objectInfo.name.endsWith(".fit", ignoreCase = true)) {
+            for ((index, handle) in activityHandles.withIndex()) {
+                var objectInfo = mtpDevice.getObjectInfo(handle)
+                var objectRetryCount = 0
+
+                while (objectInfo == null && objectRetryCount < 4) {
+                    Thread.sleep(100)
+                    objectRetryCount++
+                    objectInfo = mtpDevice.getObjectInfo(handle)
+                }
+
+                if (objectInfo == null) {
+                    unreadableCount++
+                } else if (
+                    objectInfo.name.endsWith(".fit", ignoreCase = true)
+                ) {
                     fitFiles.add(
                         FitFileInfo(
                             handle = handle,
                             name = objectInfo.name,
-                            sizeBytes = objectInfo.compressedSize.toLong(),
-                            modifiedEpochSeconds = objectInfo.dateModified
+                            sizeBytes =
+                                objectInfo.compressedSize.toLong(),
+                            modifiedEpochSeconds =
+                                objectInfo.dateModified
                         )
                     )
+                }
+
+                runOnUiThread {
+                    activityScanCurrent = index + 1
+                    mtpStatus =
+                        "Reading activity ${index + 1} " +
+                                "of ${activityHandles.size}..."
                 }
             }
 
             fitFiles.sortByDescending { it.name }
 
-            val newestSummary = fitFiles
-                .take(5)
-                .joinToString("; ") { file ->
-                    "${file.name} (${formatFileSize(file.sizeBytes)})"
-                }
+            runOnUiThread {
+                this.fitFiles = fitFiles.toList()
+            }
 
-            val oldestSummary = fitFiles
-                .takeLast(5)
-                .reversed()
-                .joinToString("; ") { file ->
-                    "${file.name} (${formatFileSize(file.sizeBytes)})"
-                }
-
-            val zeroByteCount = fitFiles.count { it.sizeBytes == 0L }
-            val verySmallCount = fitFiles.count { it.sizeBytes in 1L..1023L }
-
-            return "MTP: ${info.manufacturer} ${info.model}; " +
-                    "storage=${storageInfo?.description ?: "unknown"}; " +
-                    "FIT files=${fitFiles.size}; " +
-                    "zero-byte=$zeroByteCount; under-1KB=$verySmallCount; " +
-                    "newest: $newestSummary; " +
-                    "oldest: $oldestSummary"
+            return if (unreadableCount == 0) {
+                "Loaded ${fitFiles.size} activities"
+            } else {
+                "Loaded ${fitFiles.size} activities; " +
+                        "$unreadableCount objects could not be read"
+            }
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"
@@ -375,6 +425,9 @@ fun RideVaultHome(
     usbConnectionStatus: String,
     mtpStatus: String,
     mtpBusy: Boolean,
+    fitFiles: List<FitFileInfo>,
+    activityScanCurrent: Int,
+    activityScanTotal: Int,
     onRequestPermission: () -> Unit,
     onOpenMtpSession: () -> Unit
 ) {
@@ -385,22 +438,26 @@ fun RideVaultHome(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "RideVault",
-                style = MaterialTheme.typography.headlineLarge
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "RideVault",
+                    style = MaterialTheme.typography.headlineMedium
+                )
 
-            Text(
-                text = "Rev 0.0.12",
-                style = MaterialTheme.typography.bodyMedium
-            )
+                Text(
+                    text = "Rev 0.0.17",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             if (device == null) {
                 Text(
@@ -414,45 +471,115 @@ fun RideVaultHome(
                     text = "Connect your Edge with USB-C.",
                     style = MaterialTheme.typography.bodyMedium
                 )
-            } else {
+            } else if (!hasPermission) {
                 Text(
                     text = "Cycling computer connected",
                     style = MaterialTheme.typography.titleLarge
                 )
 
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(onClick = onRequestPermission) {
+                    Text("Grant USB Permission")
+                }
+            } else {
+                Text(
+                    text = "Garmin Edge 1050",
+                    style = MaterialTheme.typography.titleMedium
+                )
+
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (hasPermission) {
+                Button(
+                    onClick = onOpenMtpSession,
+                    enabled = !mtpBusy
+                ) {
                     Text(
-                        text = "USB permission granted",
+                        if (mtpBusy) "Loading..."
+                        else "Refresh"
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (mtpBusy && activityScanTotal > 0) {
+                    val scanProgress =
+                        activityScanCurrent.toFloat() /
+                                activityScanTotal.toFloat()
+
+                    Text(
+                        text =
+                            "$activityScanCurrent of " +
+                                    "$activityScanTotal activities",
                         style = MaterialTheme.typography.titleMedium
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    Text(
-                        text = usbConnectionStatus,
-                        style = MaterialTheme.typography.bodyLarge
+                    LinearProgressIndicator(
+                        progress = { scanProgress },
+                        modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = onOpenMtpSession,
-                        enabled = !mtpBusy
-                    ) {
-                        Text(if (mtpBusy) "MTP Working..." else "Open MTP Session")
-                    }
 
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
                         text = mtpStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else if (fitFiles.isEmpty()) {
+                    Text(
+                        text = mtpStatus,
                         style = MaterialTheme.typography.bodyLarge
                     )
                 } else {
-                    Button(onClick = onRequestPermission) {
-                        Text("Grant USB Permission")
+                    Text(
+                        text = "${fitFiles.size} Activities",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(
+                            items = fitFiles,
+                            key = { it.handle }
+                        ) { file ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            horizontal = 12.dp,
+                                            vertical = 6.dp
+                                        ),
+                                    horizontalArrangement =
+                                        Arrangement.SpaceBetween,
+                                    verticalAlignment =
+                                        Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = formatFitTimestamp(file.name),
+                                        style =
+                                            MaterialTheme.typography.bodyLarge
+                                    )
+
+                                    Text(
+                                        text =
+                                            formatFileSize(file.sizeBytes),
+                                        style =
+                                            MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -493,5 +620,27 @@ fun formatFileSize(bytes: Long): String {
         bytes >= 1_000_000L -> String.format("%.1f MB", bytes / 1_000_000.0)
         bytes >= 1_000L -> String.format("%.1f KB", bytes / 1_000.0)
         else -> "$bytes B"
+    }
+}
+
+
+fun formatFitTimestamp(filename: String): String {
+    return try {
+        val timestamp = filename.removeSuffix(".fit")
+        val parsed = LocalDateTime.parse(
+            timestamp,
+            DateTimeFormatter.ofPattern(
+                "yyyy-MM-dd-HH-mm-ss",
+                Locale.US
+            )
+        )
+        parsed.format(
+            DateTimeFormatter.ofPattern(
+                "yyyy-MM-dd HH:mm:ss",
+                Locale.US
+            )
+        )
+    } catch (_: Exception) {
+        filename.removeSuffix(".fit")
     }
 }

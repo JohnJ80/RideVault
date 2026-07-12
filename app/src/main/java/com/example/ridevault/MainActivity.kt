@@ -40,6 +40,9 @@ class MainActivity : ComponentActivity() {
     private var downloadBusy by mutableStateOf(false)
     private var downloadStatus by mutableStateOf("")
     private var downloadCompleteSummary by mutableStateOf<DownloadSummary?>(null)
+    private var deleteBusy by mutableStateOf(false)
+    private var deleteStatus by mutableStateOf("")
+    private var deleteCompleteCount by mutableIntStateOf(0)
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -107,6 +110,9 @@ class MainActivity : ComponentActivity() {
                     downloadBusy = downloadBusy,
                     downloadStatus = downloadStatus,
                     downloadCompleteSummary = downloadCompleteSummary,
+                    deleteBusy = deleteBusy,
+                    deleteStatus = deleteStatus,
+                    deleteCompleteCount = deleteCompleteCount,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenMtpSession = { openMtpSessionInBackground() },
                     onDownloadActivity = { file ->
@@ -120,8 +126,19 @@ class MainActivity : ComponentActivity() {
 
                         downloadActivitiesInBackground(filesToDownload)
                     },
+                    onDeleteActivityAndOlder = { boundaryFile ->
+                        val filesToDelete =
+                            fitFiles.filter { file ->
+                                file.name <= boundaryFile.name
+                            }
+
+                        deleteActivitiesInBackground(filesToDelete)
+                    },
                     onDismissDownloadComplete = {
                         downloadCompleteSummary = null
+                    },
+                    onDismissDeleteComplete = {
+                        deleteCompleteCount = 0
                     },
                     onOpenDownloadFolder = {
                         openActivitiesDownloadFolder()
@@ -216,6 +233,94 @@ class MainActivity : ComponentActivity() {
                 downloadCompleteSummary = result.second
                 downloadBusy = false
             }
+        }
+    }
+
+    private fun deleteActivitiesInBackground(
+        files: List<FitFileInfo>
+    ) {
+        if (
+            deleteBusy ||
+            mtpBusy ||
+            downloadBusy ||
+            files.isEmpty()
+        ) {
+            return
+        }
+
+        deleteBusy = true
+        deleteStatus = "Preparing deletion..."
+        deleteCompleteCount = 0
+
+        thread(start = true) {
+            val result = deleteActivitiesWorker(files)
+
+            runOnUiThread {
+                deleteStatus = result.first
+                deleteCompleteCount = result.second
+                deleteBusy = false
+
+                if (result.second > 0) {
+                    openMtpSessionInBackground()
+                }
+            }
+        }
+    }
+
+    private fun deleteActivitiesWorker(
+        files: List<FitFileInfo>
+    ): Pair<String, Int> {
+        val device = connectedDevice
+            ?: return "No Garmin device connected" to 0
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required" to 0
+        }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection" to 0
+
+        val mtpDevice = MtpDevice(device)
+
+        try {
+            if (!mtpDevice.open(connection)) {
+                return "Could not open MTP session" to 0
+            }
+
+            var deletedCount = 0
+
+            for ((index, file) in files.withIndex()) {
+                runOnUiThread {
+                    deleteStatus =
+                        "Deleting ${index + 1} of ${files.size}: " +
+                                file.name
+                }
+
+                if (!mtpDevice.deleteObject(file.handle)) {
+                    return (
+                        "Delete failed at ${index + 1} of " +
+                                "${files.size}: ${file.name}"
+                    ) to deletedCount
+                }
+
+                deletedCount++
+            }
+
+            return (
+                "Deleted $deletedCount activities"
+            ) to deletedCount
+
+        } catch (e: Exception) {
+            return (
+                "Delete exception: ${e.javaClass.simpleName}"
+            ) to 0
+        } finally {
+            try {
+                mtpDevice.close()
+            } catch (_: Exception) {
+            }
+
+            connection.close()
         }
     }
 

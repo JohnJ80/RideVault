@@ -24,14 +24,23 @@ fun RideVaultHome(
     downloadBusy: Boolean,
     downloadStatus: String,
     downloadCompleteSummary: DownloadSummary?,
+    deleteBusy: Boolean,
+    deleteStatus: String,
+    deleteCompleteCount: Int,
     onRequestPermission: () -> Unit,
     onOpenMtpSession: () -> Unit,
     onDownloadActivity: (FitFileInfo) -> Unit,
     onDownloadActivityAndNewer: (FitFileInfo) -> Unit,
+    onDeleteActivityAndOlder: (FitFileInfo) -> Unit,
     onDismissDownloadComplete: () -> Unit,
+    onDismissDeleteComplete: () -> Unit,
     onOpenDownloadFolder: () -> Unit
 ) {
     var selectedFile by remember {
+        mutableStateOf<FitFileInfo?>(null)
+    }
+
+    var deleteBoundaryFile by remember {
         mutableStateOf<FitFileInfo?>(null)
     }
 
@@ -56,7 +65,7 @@ fun RideVaultHome(
                 )
 
                 Text(
-                    text = "Rev 0.0.21",
+                    text = "Rev 0.0.22",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -109,6 +118,15 @@ fun RideVaultHome(
 
                     Text(
                         text = downloadStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                if (deleteStatus.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = deleteStatus,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -167,7 +185,10 @@ fun RideVaultHome(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable(
-                                        enabled = !downloadBusy && !mtpBusy
+                                        enabled =
+                                            !downloadBusy &&
+                                            !deleteBusy &&
+                                            !mtpBusy
                                     ) {
                                         selectedFile = file
                                     }
@@ -246,10 +267,29 @@ fun RideVaultHome(
                             selectedFile = null
                             onDownloadActivityAndNewer(file)
                         },
-                        enabled = !downloadBusy && !mtpBusy,
+                        enabled =
+                            !downloadBusy &&
+                            !deleteBusy &&
+                            !mtpBusy,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Download this activity and newer")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = {
+                            selectedFile = null
+                            deleteBoundaryFile = file
+                        },
+                        enabled =
+                            !deleteBusy &&
+                            !downloadBusy &&
+                            !mtpBusy,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Delete this activity and older")
                     }
                 }
             },
@@ -259,7 +299,10 @@ fun RideVaultHome(
                         selectedFile = null
                         onDownloadActivity(file)
                     },
-                    enabled = !downloadBusy && !mtpBusy
+                    enabled =
+                        !downloadBusy &&
+                        !deleteBusy &&
+                        !mtpBusy
                 ) {
                     Text("Download")
                 }
@@ -267,6 +310,90 @@ fun RideVaultHome(
             dismissButton = {
                 TextButton(
                     onClick = { selectedFile = null }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteBoundaryFile?.let { boundaryFile ->
+        val filesToDelete =
+            fitFiles.filter { file ->
+                file.name <= boundaryFile.name
+            }
+
+        val remainingCount =
+            fitFiles.size - filesToDelete.size
+
+        val bytesToFree =
+            filesToDelete.sumOf { file ->
+                file.sizeBytes
+            }
+
+        AlertDialog(
+            onDismissRequest = {
+                deleteBoundaryFile = null
+            },
+            title = {
+                Text("Delete Activities")
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Row {
+                        Text(
+                            text = "Boundary:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(
+                            formatFitTimestamp(
+                                boundaryFile.name
+                            )
+                        )
+                    }
+
+                    Text(
+                        "${filesToDelete.size} activities " +
+                                "will be deleted"
+                    )
+
+                    Text(
+                        "$remainingCount activities will remain"
+                    )
+
+                    Text(
+                        "Approximately " +
+                                formatFileSize(bytesToFree) +
+                                " will be freed"
+                    )
+
+                    Text("This cannot be undone")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        deleteBoundaryFile = null
+                        onDeleteActivityAndOlder(
+                            boundaryFile
+                        )
+                    },
+                    enabled =
+                        !deleteBusy &&
+                        !downloadBusy &&
+                        !mtpBusy
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        deleteBoundaryFile = null
+                    }
                 ) {
                     Text("Cancel")
                 }
@@ -364,6 +491,29 @@ fun RideVaultHome(
             dismissButton = {
                 TextButton(
                     onClick = onDismissDownloadComplete
+                ) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (deleteCompleteCount > 0) {
+        AlertDialog(
+            onDismissRequest =
+                onDismissDeleteComplete,
+            title = {
+                Text("Delete Complete")
+            },
+            text = {
+                Text(
+                    "$deleteCompleteCount activities deleted"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick =
+                        onDismissDeleteComplete
                 ) {
                     Text("OK")
                 }

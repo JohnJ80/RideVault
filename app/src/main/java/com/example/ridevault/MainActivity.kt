@@ -28,21 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.ui.theme.RideVaultTheme
 import kotlin.concurrent.thread
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-import java.util.Locale
-
-data class FitFileInfo(
-    val handle: Int,
-    val name: String,
-    val sizeBytes: Long,
-    val modifiedEpochSeconds: Long
-)
-
-data class DownloadSummary(
-    val files: List<FitFileInfo>,
-    val verifiedCount: Int
-)
 
 class MainActivity : ComponentActivity() {
 
@@ -1130,32 +1115,3 @@ fun InfoRow(label: String, value: String) {
 }
 
 
-fun formatFileSize(bytes: Long): String {
-    return when {
-        bytes >= 1_000_000L -> String.format("%.1f MB", bytes / 1_000_000.0)
-        bytes >= 1_000L -> String.format("%.1f KB", bytes / 1_000.0)
-        else -> "$bytes B"
-    }
-}
-
-
-fun formatFitTimestamp(filename: String): String {
-    return try {
-        val timestamp = filename.removeSuffix(".fit")
-        val parsed = LocalDateTime.parse(
-            timestamp,
-            DateTimeFormatter.ofPattern(
-                "yyyy-MM-dd-HH-mm-ss",
-                Locale.US
-            )
-        )
-        parsed.format(
-            DateTimeFormatter.ofPattern(
-                "yyyy-MM-dd HH:mm:ss",
-                Locale.US
-            )
-        )
-    } catch (_: Exception) {
-        filename.removeSuffix(".fit")
-    }
-}

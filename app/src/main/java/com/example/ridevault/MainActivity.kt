@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
     private var deleteBusy by mutableStateOf(false)
     private var deleteStatus by mutableStateOf("")
     private var deleteCompleteCount by mutableIntStateOf(0)
+    private var courseBackupBusy by mutableStateOf(false)
+    private var courseBackupStatus by mutableStateOf("")
+    private var courseBackupCompleteSummary by mutableStateOf<CourseBackupSummary?>(null)
 
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -116,6 +119,9 @@ class MainActivity : ComponentActivity() {
                     deleteBusy = deleteBusy,
                     deleteStatus = deleteStatus,
                     deleteCompleteCount = deleteCompleteCount,
+                    courseBackupBusy = courseBackupBusy,
+                    courseBackupStatus = courseBackupStatus,
+                    courseBackupCompleteSummary = courseBackupCompleteSummary,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenMtpSession = {
                         openMtpSessionInBackground()
@@ -147,6 +153,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenDownloadFolder = {
                         openActivitiesDownloadFolder()
+                    },
+                    onBackupCourse = { file ->
+                        backupCoursesInBackground(listOf(file))
+                    },
+                    onBackupAllCourses = {
+                        backupCoursesInBackground(courseFiles)
+                    },
+                    onDismissCourseBackupComplete = {
+                        courseBackupCompleteSummary = null
+                    },
+                    onOpenCoursesBackupFolder = {
+                        openCoursesBackupFolder()
                     }
                 )
             }
@@ -238,6 +256,34 @@ class MainActivity : ComponentActivity() {
                 downloadStatus = result.first
                 downloadCompleteSummary = result.second
                 downloadBusy = false
+            }
+        }
+    }
+
+    private fun backupCoursesInBackground(
+        files: List<CourseFileInfo>
+    ) {
+        if (
+            courseBackupBusy ||
+            mtpBusy ||
+            downloadBusy ||
+            deleteBusy ||
+            files.isEmpty()
+        ) {
+            return
+        }
+
+        courseBackupBusy = true
+        courseBackupStatus = "Preparing backup..."
+        courseBackupCompleteSummary = null
+
+        thread(start = true) {
+            val result = backupCoursesWorker(files)
+
+            runOnUiThread {
+                courseBackupStatus = result.first
+                courseBackupCompleteSummary = result.second
+                courseBackupBusy = false
             }
         }
     }
@@ -361,9 +407,137 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openCoursesBackupFolder() {
+        val folderUri = DocumentsContract.buildDocumentUri(
+            "com.android.externalstorage.documents",
+            "primary:Download/RideVault/Courses"
+        )
+
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(
+                folderUri,
+                DocumentsContract.Document.MIME_TYPE_DIR
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+
+        try {
+            startActivity(viewIntent)
+        } catch (_: Exception) {
+            val fallbackIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(
+                    DocumentsContract.EXTRA_INITIAL_URI,
+                    folderUri
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+
+            startActivity(fallbackIntent)
+        }
+    }
+
+    private data class TransferFile(
+        val handle: Int,
+        val name: String,
+        val sizeBytes: Long
+    )
+
+    private data class TransferResult(
+        val verifiedCount: Int
+    )
+
     private fun downloadActivitiesWorker(
         files: List<FitFileInfo>
     ): Pair<String, DownloadSummary?> {
+        val transferFiles = files.map { file ->
+            TransferFile(
+                handle = file.handle,
+                name = file.name,
+                sizeBytes = file.sizeBytes
+            )
+        }
+
+        val result = copyMtpFilesToDownloads(
+            files = transferFiles,
+            currentPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities/",
+            previousPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities-Previous/",
+            preparingErrorPrefix =
+                "Could not prepare download folders",
+            progressVerb = "Downloading",
+            createErrorPrefix =
+                "Could not create destination file",
+            transferFailurePrefix = "Download failed",
+            exceptionPrefix = "Download exception",
+            successNoun = "activities",
+            onProgress = { message ->
+                downloadStatus = message
+            }
+        )
+
+        val transferResult = result.second
+            ?: return result.first to null
+
+        return result.first to DownloadSummary(
+            files = files,
+            verifiedCount = transferResult.verifiedCount
+        )
+    }
+
+    private fun backupCoursesWorker(
+        files: List<CourseFileInfo>
+    ): Pair<String, CourseBackupSummary?> {
+        val transferFiles = files.map { file ->
+            TransferFile(
+                handle = file.handle,
+                name = file.name,
+                sizeBytes = file.sizeBytes
+            )
+        }
+
+        val result = copyMtpFilesToDownloads(
+            files = transferFiles,
+            currentPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Courses/",
+            previousPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Courses-Previous/",
+            preparingErrorPrefix =
+                "Could not prepare backup folders",
+            progressVerb = "Backing up",
+            createErrorPrefix =
+                "Could not create destination file",
+            transferFailurePrefix = "Backup failed",
+            exceptionPrefix = "Backup exception",
+            successNoun = "courses",
+            onProgress = { message ->
+                courseBackupStatus = message
+            }
+        )
+
+        val transferResult = result.second
+            ?: return result.first to null
+
+        return result.first to CourseBackupSummary(
+            files = files,
+            verifiedCount = transferResult.verifiedCount
+        )
+    }
+
+    private fun copyMtpFilesToDownloads(
+        files: List<TransferFile>,
+        currentPath: String,
+        previousPath: String,
+        preparingErrorPrefix: String,
+        progressVerb: String,
+        createErrorPrefix: String,
+        transferFailurePrefix: String,
+        exceptionPrefix: String,
+        successNoun: String,
+        onProgress: (String) -> Unit
+    ): Pair<String, TransferResult?> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return "Downloads require Android 10 or newer" to null
         }
@@ -374,12 +548,6 @@ class MainActivity : ComponentActivity() {
         if (!usbManager.hasPermission(device)) {
             return "USB permission required" to null
         }
-
-        val currentPath =
-            "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities/"
-
-        val previousPath =
-            "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities-Previous/"
 
         val collection =
             MediaStore.Downloads.EXTERNAL_CONTENT_URI
@@ -392,7 +560,7 @@ class MainActivity : ComponentActivity() {
             )
         } catch (e: Exception) {
             return (
-                "Could not prepare download folders: " +
+                "$preparingErrorPrefix: " +
                         e.javaClass.simpleName
             ) to null
         }
@@ -411,9 +579,10 @@ class MainActivity : ComponentActivity() {
 
             for ((index, file) in files.withIndex()) {
                 runOnUiThread {
-                    downloadStatus =
-                        "Downloading ${index + 1} of ${files.size}: " +
+                    onProgress(
+                        "$progressVerb ${index + 1} of ${files.size}: " +
                                 file.name
+                    )
                 }
 
                 val values = ContentValues().apply {
@@ -421,17 +590,14 @@ class MainActivity : ComponentActivity() {
                         MediaStore.Downloads.DISPLAY_NAME,
                         file.name
                     )
-
                     put(
                         MediaStore.Downloads.MIME_TYPE,
                         "application/octet-stream"
                     )
-
                     put(
                         MediaStore.Downloads.RELATIVE_PATH,
                         currentPath
                     )
-
                     put(
                         MediaStore.Downloads.IS_PENDING,
                         1
@@ -442,8 +608,7 @@ class MainActivity : ComponentActivity() {
                     collection,
                     values
                 ) ?: return (
-                    "Could not create destination file: " +
-                            file.name
+                    "$createErrorPrefix: ${file.name}"
                 ) to null
 
                 val imported = try {
@@ -467,21 +632,19 @@ class MainActivity : ComponentActivity() {
                     )
 
                     return (
-                        "Download failed at ${index + 1} of " +
+                        "$transferFailurePrefix at ${index + 1} of " +
                                 "${files.size}: ${file.name}"
                     ) to null
                 }
 
-                val completedValues = ContentValues().apply {
-                    put(
-                        MediaStore.Downloads.IS_PENDING,
-                        0
-                    )
-                }
-
                 contentResolver.update(
                     outputUri,
-                    completedValues,
+                    ContentValues().apply {
+                        put(
+                            MediaStore.Downloads.IS_PENDING,
+                            0
+                        )
+                    },
                     null,
                     null
                 )
@@ -507,20 +670,15 @@ class MainActivity : ComponentActivity() {
                 verifiedCount++
             }
 
-            val summary = DownloadSummary(
-                files = files,
+            return (
+                "Downloaded and verified $verifiedCount of " +
+                        "${files.size} $successNoun"
+            ) to TransferResult(
                 verifiedCount = verifiedCount
             )
-
-            return (
-                "Downloaded and verified $verifiedCount " +
-                        "of ${files.size} activities"
-            ) to summary
-
         } catch (e: Exception) {
             return (
-                "Download exception: " +
-                        e.javaClass.simpleName
+                "$exceptionPrefix: ${e.javaClass.simpleName}"
             ) to null
         } finally {
             try {

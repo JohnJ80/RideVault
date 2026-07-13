@@ -11,3 +11,10 @@ data class DownloadSummary(
     val files: List<FitFileInfo>,
     val verifiedCount: Int
 )
+
+data class CourseFileInfo(
+    val handle: Int,
+    val name: String,
+    val sizeBytes: Long,
+    val modifiedEpochSeconds: Long
+)

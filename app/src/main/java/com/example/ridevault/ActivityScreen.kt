@@ -19,6 +19,7 @@ fun RideVaultHome(
     mtpStatus: String,
     mtpBusy: Boolean,
     fitFiles: List<FitFileInfo>,
+    courseFiles: List<CourseFileInfo>,
     activityScanCurrent: Int,
     activityScanTotal: Int,
     downloadBusy: Boolean,
@@ -44,6 +45,255 @@ fun RideVaultHome(
         mutableStateOf<FitFileInfo?>(null)
     }
 
+    var selectedDomain by remember {
+        mutableStateOf("home")
+    }
+
+    if (device == null || !hasPermission) {
+        selectedDomain = "home"
+    }
+
+    if (
+        device != null &&
+        hasPermission &&
+        selectedDomain == "home"
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment =
+                    Alignment.CenterHorizontally
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween,
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "RideVault",
+                        style =
+                            MaterialTheme.typography.headlineMedium
+                    )
+
+                    Text(
+                        text = "Rev 0.0.24",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "Garmin Edge 1050",
+                    style =
+                        MaterialTheme.typography.titleLarge
+                )
+
+                Text(
+                    text = "Connected",
+                    style =
+                        MaterialTheme.typography.bodyMedium
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = onOpenMtpSession,
+                    enabled = !mtpBusy
+                ) {
+                    Text(
+                        if (mtpBusy) {
+                            "Reading Garmin..."
+                        } else {
+                            "Load Garmin Data"
+                        }
+                    )
+                }
+
+                if (mtpStatus.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = mtpStatus,
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            enabled = !mtpBusy
+                        ) {
+                            selectedDomain = "activities"
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+                        Text(
+                            text = "Activities",
+                            style =
+                                MaterialTheme.typography.titleLarge
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(6.dp)
+                        )
+
+                        Text(
+                            text = fitFiles.size.toString(),
+                            style =
+                                MaterialTheme.typography.headlineMedium
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            enabled = !mtpBusy
+                        ) {
+                            selectedDomain = "courses"
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+                        Text(
+                            text = "Courses",
+                            style =
+                                MaterialTheme.typography.titleLarge
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(6.dp)
+                        )
+
+                        Text(
+                            text = courseFiles.size.toString(),
+                            style =
+                                MaterialTheme.typography.headlineMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        return
+    }
+
+    if (
+        device != null &&
+        hasPermission &&
+        selectedDomain == "courses"
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween,
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            selectedDomain = "home"
+                        }
+                    ) {
+                        Text("Back")
+                    }
+
+                    Text(
+                        text = "Rev 0.0.24",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Text(
+                    text = "Courses",
+                    style =
+                        MaterialTheme.typography.headlineMedium
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "${courseFiles.size} Courses",
+                    style =
+                        MaterialTheme.typography.titleMedium
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (courseFiles.isEmpty()) {
+                    Text(
+                        text = if (mtpBusy) {
+                            mtpStatus
+                        } else {
+                            "No course files found"
+                        },
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(
+                            items = courseFiles,
+                            key = { it.handle }
+                        ) { course ->
+                            Card(
+                                modifier =
+                                    Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = course.name,
+                                    modifier =
+                                        Modifier.padding(12.dp),
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -65,7 +315,7 @@ fun RideVaultHome(
                 )
 
                 Text(
-                    text = "Rev 0.0.22",
+                    text = "Rev 0.0.24",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -96,20 +346,27 @@ fun RideVaultHome(
                     Text("Grant USB Permission")
                 }
             } else {
-                Text(
-                    text = "Garmin Edge 1050",
-                    style = MaterialTheme.typography.titleMedium
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Button(
-                    onClick = onOpenMtpSession,
-                    enabled = !mtpBusy
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment =
+                        Alignment.CenterVertically
                 ) {
+                    TextButton(
+                        onClick = {
+                            selectedDomain = "home"
+                        }
+                    ) {
+                        Text("Back")
+                    }
+
+                    Spacer(
+                        modifier = Modifier.width(8.dp)
+                    )
+
                     Text(
-                        if (mtpBusy) "Loading..."
-                        else "Refresh"
+                        text = "Activities",
+                        style =
+                            MaterialTheme.typography.titleLarge
                     )
                 }
 
@@ -131,7 +388,9 @@ fun RideVaultHome(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
 
                 if (mtpBusy && activityScanTotal > 0) {
                     val scanProgress =

@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity() {
     private var mtpStatus by mutableStateOf("MTP not opened")
     private var mtpBusy by mutableStateOf(false)
     private var fitFiles by mutableStateOf<List<FitFileInfo>>(emptyList())
+    private var courseFiles by mutableStateOf<List<CourseFileInfo>>(emptyList())
     private var activityScanCurrent by mutableIntStateOf(0)
     private var activityScanTotal by mutableIntStateOf(0)
     private var downloadBusy by mutableStateOf(false)
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private var deleteBusy by mutableStateOf(false)
     private var deleteStatus by mutableStateOf("")
     private var deleteCompleteCount by mutableIntStateOf(0)
+
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -105,6 +107,7 @@ class MainActivity : ComponentActivity() {
                     mtpStatus = mtpStatus,
                     mtpBusy = mtpBusy,
                     fitFiles = fitFiles,
+                    courseFiles = courseFiles,
                     activityScanCurrent = activityScanCurrent,
                     activityScanTotal = activityScanTotal,
                     downloadBusy = downloadBusy,
@@ -114,7 +117,9 @@ class MainActivity : ComponentActivity() {
                     deleteStatus = deleteStatus,
                     deleteCompleteCount = deleteCompleteCount,
                     onRequestPermission = { requestUsbPermission() },
-                    onOpenMtpSession = { openMtpSessionInBackground() },
+                    onOpenMtpSession = {
+                        openMtpSessionInBackground()
+                    },
                     onDownloadActivity = { file ->
                         downloadActivitiesInBackground(listOf(file))
                     },
@@ -169,6 +174,7 @@ class MainActivity : ComponentActivity() {
             mtpStatus = "MTP not opened"
             mtpBusy = false
             fitFiles = emptyList()
+            courseFiles = emptyList()
             activityScanCurrent = 0
             activityScanTotal = 0
         } else if (hasUsbPermission) {
@@ -712,7 +718,21 @@ class MainActivity : ComponentActivity() {
                 .joinToString("; ") { it.second }
 
             val activitiesHandle = garminObjects
-                .firstOrNull { it.second.equals("Activities", ignoreCase = true) }
+                .firstOrNull {
+                    it.second.equals(
+                        "Activities",
+                        ignoreCase = true
+                    )
+                }
+                ?.first
+
+            val coursesHandle = garminObjects
+                .firstOrNull {
+                    it.second.equals(
+                        "Courses",
+                        ignoreCase = true
+                    )
+                }
                 ?.first
 
             if (activitiesHandle == null) {
@@ -802,11 +822,102 @@ class MainActivity : ComponentActivity() {
                 this.fitFiles = fitFiles.toList()
             }
 
-            return if (unreadableCount == 0) {
-                "Loaded ${fitFiles.size} activities"
+            val courseFiles =
+                mutableListOf<CourseFileInfo>()
+
+            var unreadableCourseCount = 0
+
+            if (coursesHandle != null) {
+                runOnUiThread {
+                    mtpStatus = "Reading Courses folder..."
+                }
+
+                val courseHandleSet =
+                    linkedSetOf<Int>()
+
+                repeat(3) { attempt ->
+                    val handles =
+                        mtpDevice.getObjectHandles(
+                            storageId,
+                            0,
+                            coursesHandle
+                        ) ?: intArrayOf()
+
+                    courseHandleSet.addAll(
+                        handles.toList()
+                    )
+
+                    runOnUiThread {
+                        mtpStatus =
+                            "Reading course index... " +
+                                    "pass ${attempt + 1} of 3; " +
+                                    "${courseHandleSet.size} found"
+                    }
+
+                    if (attempt < 2) {
+                        Thread.sleep(200)
+                    }
+                }
+
+                for (handle in courseHandleSet) {
+                    var objectInfo =
+                        mtpDevice.getObjectInfo(handle)
+
+                    var retryCount = 0
+
+                    while (
+                        objectInfo == null &&
+                        retryCount < 4
+                    ) {
+                        Thread.sleep(100)
+                        retryCount++
+                        objectInfo =
+                            mtpDevice.getObjectInfo(handle)
+                    }
+
+                    if (objectInfo == null) {
+                        unreadableCourseCount++
+                    } else if (
+                        objectInfo.name.endsWith(
+                            ".fit",
+                            ignoreCase = true
+                        )
+                    ) {
+                        courseFiles.add(
+                            CourseFileInfo(
+                                handle = handle,
+                                name = objectInfo.name,
+                                sizeBytes =
+                                    objectInfo.compressedSize
+                                        .toLong(),
+                                modifiedEpochSeconds =
+                                    objectInfo.dateModified
+                            )
+                        )
+                    }
+                }
+            }
+
+            courseFiles.sortBy {
+                it.name.lowercase()
+            }
+
+            runOnUiThread {
+                this.courseFiles =
+                    courseFiles.toList()
+            }
+
+            val unreadableTotal =
+                unreadableCount +
+                        unreadableCourseCount
+
+            return if (unreadableTotal == 0) {
+                "Loaded ${fitFiles.size} activities " +
+                        "and ${courseFiles.size} courses"
             } else {
-                "Loaded ${fitFiles.size} activities; " +
-                        "$unreadableCount objects could not be read"
+                "Loaded ${fitFiles.size} activities " +
+                        "and ${courseFiles.size} courses; " +
+                        "$unreadableTotal objects could not be read"
             }
 
         } catch (e: Exception) {

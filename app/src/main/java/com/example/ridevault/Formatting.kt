@@ -37,3 +37,34 @@ fun formatFitTimestamp(filename: String): String {
         filename.removeSuffix(".fit")
     }
 }
+
+fun normalizeCourseFitFilename(filename: String): String {
+    var baseName = filename
+
+    while (baseName.endsWith(".fit", ignoreCase = true)) {
+        baseName = baseName.substring(0, baseName.length - 4)
+    }
+
+    return "$baseName.fit"
+}
+
+fun normalizeDownloadRelativePath(path: String): String {
+    val trimmed = path.trim()
+
+    if (trimmed.isEmpty()) {
+        return trimmed
+    }
+
+    return trimmed.trimEnd('/') + "/"
+}
+
+fun downloadRelativePathQueryValues(path: String): List<String> {
+    val normalized = normalizeDownloadRelativePath(path)
+    val withoutTrailingSlash = normalized.trimEnd('/')
+
+    return if (withoutTrailingSlash == normalized) {
+        listOf(normalized)
+    } else {
+        listOf(normalized, withoutTrailingSlash)
+    }
+}

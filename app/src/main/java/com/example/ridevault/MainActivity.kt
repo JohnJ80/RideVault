@@ -11,6 +11,7 @@ import android.provider.DocumentsContract
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.mtp.MtpDevice
+import android.mtp.MtpObjectInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -47,6 +48,9 @@ class MainActivity : ComponentActivity() {
     private var courseBackupBusy by mutableStateOf(false)
     private var courseBackupStatus by mutableStateOf("")
     private var courseBackupCompleteSummary by mutableStateOf<CourseBackupSummary?>(null)
+    private var courseDeleteBusy by mutableStateOf(false)
+    private var courseDeleteStatus by mutableStateOf("")
+    private var courseDeleteCompleteCount by mutableIntStateOf(0)
 
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -122,6 +126,9 @@ class MainActivity : ComponentActivity() {
                     courseBackupBusy = courseBackupBusy,
                     courseBackupStatus = courseBackupStatus,
                     courseBackupCompleteSummary = courseBackupCompleteSummary,
+                    courseDeleteBusy = courseDeleteBusy,
+                    courseDeleteStatus = courseDeleteStatus,
+                    courseDeleteCompleteCount = courseDeleteCompleteCount,
                     onRequestPermission = { requestUsbPermission() },
                     onOpenMtpSession = {
                         openMtpSessionInBackground()
@@ -165,6 +172,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenCoursesBackupFolder = {
                         openCoursesBackupFolder()
+                    },
+                    onDeleteCourse = { file ->
+                        deleteCoursesInBackground(listOf(file))
+                    },
+                    onDeleteAllCourses = {
+                        deleteCoursesInBackground(courseFiles)
+                    },
+                    onDismissCourseDeleteComplete = {
+                        courseDeleteCompleteCount = 0
                     }
                 )
             }
@@ -221,6 +237,19 @@ class MainActivity : ComponentActivity() {
         usbManager.requestPermission(device, permissionIntent)
     }
 
+    private fun closeMtpSession(
+        mtpDevice: MtpDevice,
+        mtpOpened: Boolean
+    ) {
+        if (!mtpOpened) {
+            return
+        }
+
+        try {
+            mtpDevice.close()
+        } catch (_: Exception) {
+        }
+    }
 
     private fun openMtpSessionInBackground() {
         if (mtpBusy) return
@@ -243,7 +272,7 @@ class MainActivity : ComponentActivity() {
     private fun downloadActivitiesInBackground(
         files: List<FitFileInfo>
     ) {
-        if (downloadBusy || mtpBusy || files.isEmpty()) return
+        if (downloadBusy || mtpBusy || courseDeleteBusy || files.isEmpty()) return
 
         downloadBusy = true
         downloadStatus = "Preparing download..."
@@ -268,6 +297,7 @@ class MainActivity : ComponentActivity() {
             mtpBusy ||
             downloadBusy ||
             deleteBusy ||
+            courseDeleteBusy ||
             files.isEmpty()
         ) {
             return
@@ -295,6 +325,8 @@ class MainActivity : ComponentActivity() {
             deleteBusy ||
             mtpBusy ||
             downloadBusy ||
+            courseBackupBusy ||
+            courseDeleteBusy ||
             files.isEmpty()
         ) {
             return
@@ -319,6 +351,279 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun deleteCoursesInBackground(
+        files: List<CourseFileInfo>
+    ) {
+        if (
+            courseDeleteBusy ||
+            mtpBusy ||
+            downloadBusy ||
+            deleteBusy ||
+            courseBackupBusy ||
+            files.isEmpty()
+        ) {
+            return
+        }
+
+        courseDeleteBusy = true
+        courseDeleteStatus = "Preparing deletion..."
+        courseDeleteCompleteCount = 0
+
+        thread(start = true) {
+            val result = deleteCoursesWorker(files)
+
+            runOnUiThread {
+                courseDeleteStatus = result.first
+                courseDeleteCompleteCount = result.second
+                courseDeleteBusy = false
+
+                if (result.second > 0) {
+                    openMtpSessionInBackground()
+                }
+            }
+        }
+    }
+
+    private fun deleteCoursesWorker(
+        files: List<CourseFileInfo>
+    ): Pair<String, Int> {
+        val device = connectedDevice
+            ?: return "No Garmin device connected" to 0
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required" to 0
+        }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection" to 0
+
+        val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
+
+        try {
+            if (!mtpDevice.open(connection)) {
+                return "Could not open MTP session" to 0
+            }
+
+            mtpOpened = true
+
+            val storageIds = mtpDevice.storageIds ?: intArrayOf()
+
+            if (storageIds.isEmpty()) {
+                return "No MTP storage found" to 0
+            }
+
+            val storageId = storageIds[0]
+            val coursesHandle = findCoursesFolderHandle(
+                mtpDevice = mtpDevice,
+                storageId = storageId
+            ) ?: return "Courses folder not found" to 0
+
+            val freshCourseFiles = enumerateCourseFilesOnDevice(
+                mtpDevice = mtpDevice,
+                storageId = storageId,
+                coursesHandle = coursesHandle
+            )
+
+            val requestedNames = files
+                .map { it.name.lowercase() }
+                .toSet()
+            val filesToDelete = freshCourseFiles.filter { file ->
+                file.name.lowercase() in requestedNames
+            }
+
+            if (filesToDelete.isEmpty()) {
+                return "No matching courses found on device" to 0
+            }
+
+            var deletedCount = 0
+
+            for ((index, file) in filesToDelete.withIndex()) {
+                runOnUiThread {
+                    courseDeleteStatus =
+                        "Deleting ${index + 1} of ${filesToDelete.size}: " +
+                                file.name
+                }
+
+                if (!deleteMtpObjectWithRetry(mtpDevice, file.handle)) {
+                    return (
+                        "Delete failed at ${index + 1} of " +
+                                "${filesToDelete.size}: ${file.name}"
+                    ) to deletedCount
+                }
+
+                deletedCount++
+            }
+
+            return (
+                "Deleted $deletedCount courses"
+            ) to deletedCount
+
+        } catch (e: Exception) {
+            return (
+                "Delete exception: ${e.javaClass.simpleName}"
+            ) to 0
+        } finally {
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
+        }
+    }
+
+    private fun getMtpObjectInfoWithRetry(
+        mtpDevice: MtpDevice,
+        handle: Int
+    ): MtpObjectInfo? {
+        var objectInfo = mtpDevice.getObjectInfo(handle)
+        var retryCount = 0
+
+        while (objectInfo == null && retryCount < 4) {
+            Thread.sleep(100)
+            retryCount++
+            objectInfo = mtpDevice.getObjectInfo(handle)
+        }
+
+        return objectInfo
+    }
+
+    private fun findGarminFolderHandle(
+        mtpDevice: MtpDevice,
+        storageId: Int
+    ): Int? {
+        val rootHandles =
+            mtpDevice.getObjectHandles(storageId, 0, -1)
+                ?: return null
+
+        return rootHandles
+            .toList()
+            .mapNotNull { handle ->
+                getMtpObjectInfoWithRetry(mtpDevice, handle)?.let { info ->
+                    handle to info.name
+                }
+            }
+            .firstOrNull {
+                it.second.equals("Garmin", ignoreCase = true)
+            }
+            ?.first
+    }
+
+    private fun findGarminChildFolderHandle(
+        mtpDevice: MtpDevice,
+        storageId: Int,
+        garminHandle: Int,
+        folderName: String
+    ): Int? {
+        val garminHandles =
+            mtpDevice.getObjectHandles(
+                storageId,
+                0,
+                garminHandle
+            ) ?: return null
+
+        return garminHandles
+            .toList()
+            .mapNotNull { handle ->
+                getMtpObjectInfoWithRetry(mtpDevice, handle)?.let { info ->
+                    handle to info.name
+                }
+            }
+            .firstOrNull {
+                it.second.equals(folderName, ignoreCase = true)
+            }
+            ?.first
+    }
+
+    private fun findCoursesFolderHandle(
+        mtpDevice: MtpDevice,
+        storageId: Int
+    ): Int? {
+        val garminHandle = findGarminFolderHandle(
+            mtpDevice = mtpDevice,
+            storageId = storageId
+        ) ?: return null
+
+        return findGarminChildFolderHandle(
+            mtpDevice = mtpDevice,
+            storageId = storageId,
+            garminHandle = garminHandle,
+            folderName = "Courses"
+        )
+    }
+
+    private fun enumerateCourseFilesOnDevice(
+        mtpDevice: MtpDevice,
+        storageId: Int,
+        coursesHandle: Int
+    ): List<CourseFileInfo> {
+        val courseHandleSet = linkedSetOf<Int>()
+
+        repeat(3) { attempt ->
+            val handles =
+                mtpDevice.getObjectHandles(
+                    storageId,
+                    0,
+                    coursesHandle
+                ) ?: intArrayOf()
+
+            courseHandleSet.addAll(handles.toList())
+
+            if (attempt < 2) {
+                Thread.sleep(200)
+            }
+        }
+
+        val courseFiles = mutableListOf<CourseFileInfo>()
+
+        for (handle in courseHandleSet) {
+            var objectInfo = mtpDevice.getObjectInfo(handle)
+            var retryCount = 0
+
+            while (objectInfo == null && retryCount < 4) {
+                Thread.sleep(100)
+                retryCount++
+                objectInfo = mtpDevice.getObjectInfo(handle)
+            }
+
+            if (
+                objectInfo != null &&
+                objectInfo.name.endsWith(".fit", ignoreCase = true)
+            ) {
+                courseFiles.add(
+                    CourseFileInfo(
+                        handle = handle,
+                        name = objectInfo.name,
+                        sizeBytes =
+                            objectInfo.compressedSize.toLong(),
+                        modifiedEpochSeconds =
+                            objectInfo.dateModified
+                    )
+                )
+            }
+        }
+
+        return courseFiles.sortedBy {
+            it.name.lowercase()
+        }
+    }
+
+    private fun deleteMtpObjectWithRetry(
+        mtpDevice: MtpDevice,
+        handle: Int
+    ): Boolean {
+        repeat(4) { attempt ->
+            if (mtpDevice.deleteObject(handle)) {
+                return true
+            }
+
+            if (attempt < 3) {
+                Thread.sleep(100)
+            }
+        }
+
+        return false
+    }
+
     private fun deleteActivitiesWorker(
         files: List<FitFileInfo>
     ): Pair<String, Int> {
@@ -333,11 +638,14 @@ class MainActivity : ComponentActivity() {
             ?: return "Could not open USB connection" to 0
 
         val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
 
         try {
             if (!mtpDevice.open(connection)) {
                 return "Could not open MTP session" to 0
             }
+
+            mtpOpened = true
 
             var deletedCount = 0
 
@@ -367,12 +675,10 @@ class MainActivity : ComponentActivity() {
                 "Delete exception: ${e.javaClass.simpleName}"
             ) to 0
         } finally {
-            try {
-                mtpDevice.close()
-            } catch (_: Exception) {
-            }
-
-            connection.close()
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
         }
     }
 
@@ -493,7 +799,7 @@ class MainActivity : ComponentActivity() {
         val transferFiles = files.map { file ->
             TransferFile(
                 handle = file.handle,
-                name = file.name,
+                name = normalizeCourseFitFilename(file.name),
                 sizeBytes = file.sizeBytes
             )
         }
@@ -551,12 +857,16 @@ class MainActivity : ComponentActivity() {
 
         val collection =
             MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val normalizedCurrentPath =
+            normalizeDownloadRelativePath(currentPath)
+        val normalizedPreviousPath =
+            normalizeDownloadRelativePath(previousPath)
 
         try {
             rotateDownloadSet(
                 collection = collection,
-                currentPath = currentPath,
-                previousPath = previousPath
+                currentPath = normalizedCurrentPath,
+                previousPath = normalizedPreviousPath
             )
         } catch (e: Exception) {
             return (
@@ -569,11 +879,14 @@ class MainActivity : ComponentActivity() {
             ?: return "Could not open USB connection" to null
 
         val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
 
         try {
             if (!mtpDevice.open(connection)) {
                 return "Could not open MTP session" to null
             }
+
+            mtpOpened = true
 
             var verifiedCount = 0
 
@@ -596,7 +909,7 @@ class MainActivity : ComponentActivity() {
                     )
                     put(
                         MediaStore.Downloads.RELATIVE_PATH,
-                        currentPath
+                        normalizedCurrentPath
                     )
                     put(
                         MediaStore.Downloads.IS_PENDING,
@@ -681,13 +994,39 @@ class MainActivity : ComponentActivity() {
                 "$exceptionPrefix: ${e.javaClass.simpleName}"
             ) to null
         } finally {
-            try {
-                mtpDevice.close()
-            } catch (_: Exception) {
-            }
-
-            connection.close()
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
         }
+    }
+
+    private fun queryDownloadIdsAtRelativePath(
+        collection: android.net.Uri,
+        relativePath: String
+    ): Set<Long> {
+        val projection = arrayOf(MediaStore.Downloads._ID)
+        val ids = linkedSetOf<Long>()
+
+        for (queryPath in downloadRelativePathQueryValues(relativePath)) {
+            contentResolver.query(
+                collection,
+                projection,
+                "${MediaStore.Downloads.RELATIVE_PATH} = ?",
+                arrayOf(queryPath),
+                null
+            )?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(
+                    MediaStore.Downloads._ID
+                )
+
+                while (cursor.moveToNext()) {
+                    ids.add(cursor.getLong(idColumn))
+                }
+            }
+        }
+
+        return ids
     }
 
     private fun rotateDownloadSet(
@@ -695,64 +1034,47 @@ class MainActivity : ComponentActivity() {
         currentPath: String,
         previousPath: String
     ) {
-        val projection = arrayOf(MediaStore.Downloads._ID)
+        val normalizedCurrentPath =
+            normalizeDownloadRelativePath(currentPath)
+        val normalizedPreviousPath =
+            normalizeDownloadRelativePath(previousPath)
 
-        // Remove the download set from two sessions ago.
-        contentResolver.query(
+        for (itemId in queryDownloadIdsAtRelativePath(
             collection,
-            projection,
-            "${MediaStore.Downloads.RELATIVE_PATH} = ?",
-            arrayOf(previousPath),
-            null
-        )?.use { cursor ->
-            val idColumn = cursor.getColumnIndexOrThrow(
-                MediaStore.Downloads._ID
-            )
+            normalizedPreviousPath
+        )) {
+            val itemUri =
+                android.content.ContentUris.withAppendedId(
+                    collection,
+                    itemId
+                )
 
-            while (cursor.moveToNext()) {
-                val itemUri =
-                    android.content.ContentUris.withAppendedId(
-                        collection,
-                        cursor.getLong(idColumn)
-                    )
-
-                contentResolver.delete(itemUri, null, null)
-            }
+            contentResolver.delete(itemUri, null, null)
         }
 
-        // Move the current download set into Activities-Previous.
-        contentResolver.query(
+        for (itemId in queryDownloadIdsAtRelativePath(
             collection,
-            projection,
-            "${MediaStore.Downloads.RELATIVE_PATH} = ?",
-            arrayOf(currentPath),
-            null
-        )?.use { cursor ->
-            val idColumn = cursor.getColumnIndexOrThrow(
-                MediaStore.Downloads._ID
-            )
+            normalizedCurrentPath
+        )) {
+            val itemUri =
+                android.content.ContentUris.withAppendedId(
+                    collection,
+                    itemId
+                )
 
-            while (cursor.moveToNext()) {
-                val itemUri =
-                    android.content.ContentUris.withAppendedId(
-                        collection,
-                        cursor.getLong(idColumn)
-                    )
-
-                val moveValues = ContentValues().apply {
-                    put(
-                        MediaStore.Downloads.RELATIVE_PATH,
-                        previousPath
-                    )
-                }
-
-                contentResolver.update(
-                    itemUri,
-                    moveValues,
-                    null,
-                    null
+            val moveValues = ContentValues().apply {
+                put(
+                    MediaStore.Downloads.RELATIVE_PATH,
+                    normalizedPreviousPath
                 )
             }
+
+            contentResolver.update(
+                itemUri,
+                moveValues,
+                null,
+                null
+            )
         }
     }
 
@@ -769,6 +1091,7 @@ class MainActivity : ComponentActivity() {
             ?: return "Could not open USB connection"
 
         val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
 
         try {
             runOnUiThread { mtpStatus = "Opening MTP session..." }
@@ -778,6 +1101,8 @@ class MainActivity : ComponentActivity() {
             if (!opened) {
                 return "Could not open MTP session"
             }
+
+            mtpOpened = true
 
             runOnUiThread { mtpStatus = "Reading DeviceInfo..." }
 
@@ -1081,12 +1406,10 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"
         } finally {
-            try {
-                mtpDevice.close()
-            } catch (_: Exception) {
-            }
-
-            connection.close()
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
         }
     }
 }

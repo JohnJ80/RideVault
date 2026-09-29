@@ -31,6 +31,9 @@ fun RideVaultHome(
     courseBackupBusy: Boolean,
     courseBackupStatus: String,
     courseBackupCompleteSummary: CourseBackupSummary?,
+    courseDeleteBusy: Boolean,
+    courseDeleteStatus: String,
+    courseDeleteCompleteCount: Int,
     onRequestPermission: () -> Unit,
     onOpenMtpSession: () -> Unit,
     onDownloadActivity: (FitFileInfo) -> Unit,
@@ -42,7 +45,10 @@ fun RideVaultHome(
     onBackupCourse: (CourseFileInfo) -> Unit,
     onBackupAllCourses: () -> Unit,
     onDismissCourseBackupComplete: () -> Unit,
-    onOpenCoursesBackupFolder: () -> Unit
+    onOpenCoursesBackupFolder: () -> Unit,
+    onDeleteCourse: (CourseFileInfo) -> Unit,
+    onDeleteAllCourses: () -> Unit,
+    onDismissCourseDeleteComplete: () -> Unit
 ) {
     var selectedFile by remember {
         mutableStateOf<FitFileInfo?>(null)
@@ -50,6 +56,14 @@ fun RideVaultHome(
 
     var selectedCourse by remember {
         mutableStateOf<CourseFileInfo?>(null)
+    }
+
+    var courseToDelete by remember {
+        mutableStateOf<CourseFileInfo?>(null)
+    }
+
+    var confirmDeleteAllCourses by remember {
+        mutableStateOf(false)
     }
 
     var deleteBoundaryFile by remember {
@@ -94,7 +108,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.25",
+                        text = "Rev 0.0.26",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -238,7 +252,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.25",
+                        text = "Rev 0.0.26",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -270,11 +284,22 @@ fun RideVaultHome(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
+                if (courseDeleteStatus.isNotBlank()) {
+                    Text(
+                        text = courseDeleteStatus,
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 if (courseFiles.isNotEmpty()) {
                     Button(
                         onClick = onBackupAllCourses,
                         enabled =
                             !courseBackupBusy &&
+                            !courseDeleteBusy &&
                             !mtpBusy &&
                             !downloadBusy &&
                             !deleteBusy,
@@ -289,6 +314,39 @@ fun RideVaultHome(
                         )
                     }
 
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                if (courseFiles.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = {
+                            confirmDeleteAllCourses = true
+                        },
+                        enabled =
+                            !courseDeleteBusy &&
+                            !courseBackupBusy &&
+                            !mtpBusy &&
+                            !downloadBusy &&
+                            !deleteBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text(
+                            if (courseDeleteBusy) {
+                                "Deleting courses..."
+                            } else {
+                                "Delete All Courses"
+                            }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                } else {
                     Spacer(modifier = Modifier.height(12.dp))
                 }
 
@@ -321,6 +379,7 @@ fun RideVaultHome(
                                         .clickable(
                                             enabled =
                                                 !courseBackupBusy &&
+                                                !courseDeleteBusy &&
                                                 !mtpBusy &&
                                                 !downloadBusy &&
                                                 !deleteBusy
@@ -385,7 +444,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.25",
+                        text = "Rev 0.0.26",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -584,6 +643,28 @@ fun RideVaultHome(
                             formatFileSize(course.sizeBytes)
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            selectedCourse = null
+                            courseToDelete = course
+                        },
+                        enabled =
+                            !courseDeleteBusy &&
+                            !courseBackupBusy &&
+                            !mtpBusy &&
+                            !downloadBusy &&
+                            !deleteBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Delete This Course")
+                    }
                 }
             },
             confirmButton = {
@@ -594,6 +675,7 @@ fun RideVaultHome(
                     },
                     enabled =
                         !courseBackupBusy &&
+                        !courseDeleteBusy &&
                         !mtpBusy &&
                         !downloadBusy &&
                         !deleteBusy
@@ -604,6 +686,130 @@ fun RideVaultHome(
             dismissButton = {
                 TextButton(
                     onClick = { selectedCourse = null }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    courseToDelete?.let { course ->
+        AlertDialog(
+            onDismissRequest = {
+                courseToDelete = null
+            },
+            title = {
+                Text("Delete Course")
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Row {
+                        Text(
+                            text = "Filename:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(course.name)
+                    }
+
+                    Row {
+                        Text(
+                            text = "Size:",
+                            modifier = Modifier.width(110.dp)
+                        )
+                        Text(
+                            formatFileSize(course.sizeBytes)
+                        )
+                    }
+
+                    Text("This course will be deleted from your Edge")
+
+                    Text("This cannot be undone")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        courseToDelete = null
+                        onDeleteCourse(course)
+                    },
+                    enabled =
+                        !courseDeleteBusy &&
+                        !courseBackupBusy &&
+                        !mtpBusy &&
+                        !downloadBusy &&
+                        !deleteBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        courseToDelete = null
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (confirmDeleteAllCourses) {
+        AlertDialog(
+            onDismissRequest = {
+                confirmDeleteAllCourses = false
+            },
+            title = {
+                Text("Delete All Courses")
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "${courseFiles.size} courses will be deleted"
+                    )
+
+                    Text(
+                        "All courses will be removed from your Edge"
+                    )
+
+                    Text("This cannot be undone")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmDeleteAllCourses = false
+                        onDeleteAllCourses()
+                    },
+                    enabled =
+                        !courseDeleteBusy &&
+                        !courseBackupBusy &&
+                        !mtpBusy &&
+                        !downloadBusy &&
+                        !deleteBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete All")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteAllCourses = false
+                    }
                 ) {
                     Text("Cancel")
                 }
@@ -926,6 +1132,29 @@ fun RideVaultHome(
                 TextButton(
                     onClick =
                         onDismissCourseBackupComplete
+                ) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (courseDeleteCompleteCount > 0) {
+        AlertDialog(
+            onDismissRequest =
+                onDismissCourseDeleteComplete,
+            title = {
+                Text("Course Delete Complete")
+            },
+            text = {
+                Text(
+                    "$courseDeleteCompleteCount courses deleted"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick =
+                        onDismissCourseDeleteComplete
                 ) {
                     Text("OK")
                 }

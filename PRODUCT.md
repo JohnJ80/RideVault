@@ -26,15 +26,18 @@ RideVault exists to make a Moto phone a reliable offline field repository for tr
 - Show map storage usage
 - Help identify large map files
 
+## Secondary Capabilities (post-MVP)
+- **Ride with GPS collection sync** — OAuth to a user’s RWGPS account, download an entire collection, and push the routes onto a modern Garmin bike computer over MTP. Solves trip planning without repeated pin/unpin.
+- **Single Strava upload** — Occasional recovery for a stuck activity: upload one selected FIT file (already retrieved via MTP) directly to Strava. One at a time only.
+
 ## Design Principles
 
 - KISS: keep it simple.
 - Offline first.
 - Moto is the repository.
 - Store files as ordinary files.
-- No cloud dependency.
+- No cloud dependency for core operations.
 - No Garmin login.
-- No Strava login.
 - No background sync.
 - No hidden state.
 - No destructive operation without confirmation.

@@ -18,12 +18,14 @@ import org.json.JSONObject
  * Developer registers one API client at https://ridewithgps.com/api
  * and sets a custom redirect URI (e.g. ridevault://oauth/callback).
  * End users authorize with their own accounts — no developer account required.
+ *
+ * Note: client secret is currently in source for convenience. For a public
+ * release move it to local.properties / BuildConfig so it is not committed.
  */
 object RwgpsAuth {
 
-    // TODO: replace with values from your API client
-    private const val CLIENT_ID = "YOUR_CLIENT_ID"
-    private const val CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+    private const val CLIENT_ID = "a6c46d83"
+    private const val CLIENT_SECRET = "y5tpsCNLCexfqPujxhe5fOPv-7eFNCLNA8z5AdQo1HI"
     private const val REDIRECT_URI = "ridevault://oauth/callback"
 
     private const val AUTH_URL = "https://ridewithgps.com/oauth/authorize"

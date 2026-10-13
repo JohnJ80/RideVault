@@ -170,6 +170,25 @@ class RawMtpSession(
         return lastSendResult
     }
 
+    /** Last read bytes for diagnostics */
+    private var lastReadResult = 0
+
+    /**
+     * Clear a halted endpoint via USB control transfer.
+     */
+    private fun clearHalt(endpoint: UsbEndpoint) {
+        try {
+            connection.controlTransfer(
+                UsbConstants.USB_DIR_OUT or 0x02, // USB_RECIP_ENDPOINT
+                0x01,  // CLEAR_FEATURE
+                0x00,  // ENDPOINT_HALT
+                endpoint.address,
+                null, 0, timeout
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     /**
      * Read a response or data container.
      * Returns (containerType, responseCode, params, dataPayload).
@@ -177,7 +196,16 @@ class RawMtpSession(
     private fun readContainer(): ContainerResult {
         // Read up to 16KB at a time
         val buf = ByteArray(16384)
-        val bytesRead = connection.bulkTransfer(bulkIn, buf, buf.size, timeout)
+        var bytesRead = connection.bulkTransfer(bulkIn, buf, buf.size, timeout)
+        lastReadResult = bytesRead
+
+        // If read failed, try clearing halt and reading again
+        if (bytesRead < 12) {
+            clearHalt(bulkIn)
+            clearHalt(bulkOut)
+            bytesRead = connection.bulkTransfer(bulkIn, buf, buf.size, timeout)
+            lastReadResult = bytesRead
+        }
 
         if (bytesRead < 12) {
             return ContainerResult(
@@ -469,7 +497,9 @@ class RawMtpSession(
 
         if (infoResponse.code != RESP_OK) {
             val detail = if (infoResponse.type == -1) {
-                "no response (cmd=$cmdResult data=$dataResult dataSize=$lastSendSize)"
+                "no response (cmd=$cmdResult data=$dataResult " +
+                    "readResult=$lastReadResult " +
+                    "epOut=${bulkOut.maxPacketSize} epIn=${bulkIn.maxPacketSize})"
             } else {
                 "type=${infoResponse.type} code=0x${infoResponse.code.toString(16)}"
             }

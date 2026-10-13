@@ -7,6 +7,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.util.Base64
+import okhttp3.Credentials
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -52,13 +54,12 @@ object RwgpsAuth {
                 val body = FormBody.Builder()
                     .add("grant_type", "authorization_code")
                     .add("code", code)
-                    .add("client_id", CLIENT_ID)
-                    .add("client_secret", CLIENT_SECRET)
                     .add("redirect_uri", REDIRECT_URI)
                     .build()
 
                 val request = Request.Builder()
                     .url(TOKEN_URL)
+                    .header("Authorization", Credentials.basic(CLIENT_ID, CLIENT_SECRET))
                     .post(body)
                     .build()
 

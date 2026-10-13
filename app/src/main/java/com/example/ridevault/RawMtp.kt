@@ -30,6 +30,7 @@ class RawMtpSession(
         private const val CONTAINER_RESPONSE = 3
 
         // Operation codes
+        private const val OP_GET_DEVICE_INFO = 0x1001
         private const val OP_OPEN_SESSION = 0x1002
         private const val OP_CLOSE_SESSION = 0x1003
         private const val OP_GET_STORAGE_IDS = 0x1004
@@ -312,6 +313,68 @@ class RawMtpSession(
             executeSimple(OP_CLOSE_SESSION)
         } catch (_: Exception) {
         }
+    }
+
+    /**
+     * Get supported operations from DeviceInfo.
+     * Returns hex strings of supported op codes, or null on failure.
+     *
+     * DeviceInfo dataset layout:
+     * - StandardVersion (uint16)
+     * - VendorExtensionID (uint32)
+     * - VendorExtensionVersion (uint16)
+     * - VendorExtensionDesc (MTP string)
+     * - FunctionalMode (uint16)
+     * - OperationsSupported (uint16 array)
+     */
+    fun getSupportedOperations(): List<Int>? {
+        val (data, response) = executeGetData(OP_GET_DEVICE_INFO)
+        if (response.code != RESP_OK || data.size < 12) return null
+
+        val bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+
+        // Skip: StandardVersion(2) + VendorExtensionID(4) + VendorExtensionVersion(2)
+        bb.position(8)
+
+        // Skip VendorExtensionDesc (MTP string)
+        if (bb.remaining() < 1) return null
+        val descLen = bb.get().toInt() and 0xFF
+        if (descLen > 0) {
+            val skipBytes = descLen * 2  // UTF-16LE chars including null
+            if (bb.remaining() < skipBytes) return null
+            bb.position(bb.position() + skipBytes)
+        }
+
+        // Skip FunctionalMode (uint16)
+        if (bb.remaining() < 2) return null
+        bb.getShort()
+
+        // OperationsSupported: uint32 count, then uint16[] ops
+        if (bb.remaining() < 4) return null
+        val opCount = bb.getInt()
+        val ops = mutableListOf<Int>()
+        for (i in 0 until opCount) {
+            if (bb.remaining() < 2) break
+            ops.add(bb.getShort().toInt() and 0xFFFF)
+        }
+        return ops
+    }
+
+    /**
+     * Get a summary of device capabilities for diagnostics.
+     */
+    fun getCapabilitySummary(): String {
+        val ops = getSupportedOperations()
+            ?: return "Could not read DeviceInfo"
+
+        val hasSendObjectInfo = ops.contains(OP_SEND_OBJECT_INFO)
+        val hasSendObject = ops.contains(OP_SEND_OBJECT)
+
+        val writeOps = ops.filter { it in 0x100C..0x1020 }
+            .joinToString(", ") { "0x${it.toString(16)}" }
+
+        return "SendObjectInfo=${hasSendObjectInfo} SendObject=${hasSendObject} " +
+                "writeOps=[$writeOps] totalOps=${ops.size}"
     }
 
     fun getStorageIds(): IntArray? {

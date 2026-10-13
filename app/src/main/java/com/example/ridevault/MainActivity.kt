@@ -422,6 +422,12 @@ class MainActivity : ComponentActivity() {
             }
 
             try {
+                // Check device capabilities
+                val caps = session.getCapabilitySummary()
+                runOnUiThread {
+                    rwgpsSendStatus = "Device: $caps"
+                }
+
                 // Get storage
                 val storageIds = session.getStorageIds()
                 if (storageIds == null || storageIds.isEmpty()) {
@@ -485,7 +491,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val errorSuffix = if (errors.isNotEmpty()) {
-                    " (${errors.size} failed: ${errors.first()})"
+                    " (${errors.size} failed: ${errors.first()}) [$caps]"
                 } else ""
 
                 return "Sent $sentCount of ${downloads.size} to $targetFolder$errorSuffix" to sentCount

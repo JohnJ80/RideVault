@@ -590,7 +590,7 @@ class MainActivity : ComponentActivity() {
                         CourseFileInfo(
                             handle = handle,
                             name = info.name,
-                            sizeBytes = info.objectCompressedSize.toLong(),
+                            sizeBytes = info.compressedSize.toLong(),
                             modifiedEpochSeconds = info.dateModified / 1000
                         )
                     } else {

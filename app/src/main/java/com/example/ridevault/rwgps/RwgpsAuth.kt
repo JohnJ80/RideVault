@@ -7,11 +7,10 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import android.util.Base64
-import okhttp3.Credentials
-import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 /**
@@ -51,15 +50,20 @@ object RwgpsAuth {
     suspend fun exchangeCodeForToken(context: Context, code: String): Pair<Boolean, String> =
         withContext(Dispatchers.IO) {
             try {
-                val body = FormBody.Builder()
-                    .add("grant_type", "authorization_code")
-                    .add("code", code)
-                    .add("redirect_uri", REDIRECT_URI)
-                    .build()
+                val jsonBody = JSONObject().apply {
+                    put("grant_type", "authorization_code")
+                    put("code", code)
+                    put("client_id", CLIENT_ID)
+                    put("client_secret", CLIENT_SECRET)
+                    put("redirect_uri", REDIRECT_URI)
+                }.toString()
+
+                val body = jsonBody.toRequestBody(
+                    "application/json; charset=utf-8".toMediaType()
+                )
 
                 val request = Request.Builder()
                     .url(TOKEN_URL)
-                    .header("Authorization", Credentials.basic(CLIENT_ID, CLIENT_SECRET))
                     .post(body)
                     .build()
 

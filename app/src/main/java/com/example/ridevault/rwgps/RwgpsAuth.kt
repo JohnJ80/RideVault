@@ -22,7 +22,7 @@ import org.json.JSONObject
 object RwgpsAuth {
 
     private const val CLIENT_ID = "QeVg8vPQvcMfb75rgTYf4e5E_nT-F4phQILYvDoWq54"
-    private const val CLIENT_SECRET = "eUeklKMEbaEX0qrMS0yQ6NfB2AB2FaMIFOs5fjfA6xc"
+    private const val CLIENT_SECRET = "eUeklkMEbaEX0qrMSOyQ6NfB2AB2FaMIFOs5fjfA6xc"
     private const val REDIRECT_URI = "ridevault://oauth/callback"
 
     private const val AUTH_URL = "https://ridewithgps.com/oauth/authorize"

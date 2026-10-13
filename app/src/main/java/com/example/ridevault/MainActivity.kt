@@ -396,20 +396,35 @@ class MainActivity : ComponentActivity() {
                         return@thread
                     }
 
-                    val success = mtpDevice.sendObject(
-                        sentInfo.objectHandle,
-                        download.data.size.toLong(),
-                        download.data
-                    )
+                    // Write bytes to a temp file for ParcelFileDescriptor
+                    val tempFile = java.io.File(cacheDir, "rwgps_temp.fit")
+                    try {
+                        tempFile.writeBytes(download.data)
 
-                    runOnUiThread {
-                        if (success) {
-                            rwgpsSendStatus = "Sent ${download.fileName} to Garmin"
-                            rwgpsSendCompleteCount++
-                        } else {
-                            rwgpsSendStatus = "Failed to send file data to Garmin"
+                        val pfd = android.os.ParcelFileDescriptor.open(
+                            tempFile,
+                            android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                        )
+
+                        val success = pfd.use {
+                            mtpDevice.sendObject(
+                                sentInfo.objectHandle,
+                                download.data.size.toLong(),
+                                it
+                            )
                         }
-                        rwgpsSendBusy = false
+
+                        runOnUiThread {
+                            if (success) {
+                                rwgpsSendStatus = "Sent ${download.fileName} to Garmin"
+                                rwgpsSendCompleteCount++
+                            } else {
+                                rwgpsSendStatus = "Failed to send file data to Garmin"
+                            }
+                            rwgpsSendBusy = false
+                        }
+                    } finally {
+                        tempFile.delete()
                     }
                 } finally {
                     try { mtpDevice.close() } catch (_: Exception) {}

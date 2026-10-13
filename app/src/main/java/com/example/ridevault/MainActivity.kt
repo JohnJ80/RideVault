@@ -394,12 +394,20 @@ class MainActivity : ComponentActivity() {
 
         thread(start = true) {
             val result = writeGpxViaRawMtp(device, downloads)
-            runOnUiThread {
-                rwgpsSendStatus = result.first
-                if (result.second > 0) {
+
+            if (result.second > 0) {
+                // MTP write succeeded
+                runOnUiThread {
+                    rwgpsSendStatus = result.first
                     rwgpsSendCompleteCount += result.second
+                    rwgpsSendBusy = false
                 }
-                rwgpsSendBusy = false
+            } else {
+                // MTP write failed — fall back to Downloads
+                runOnUiThread {
+                    rwgpsSendStatus = "Garmin blocked USB write — saving to Downloads..."
+                }
+                saveGpxToDownloads(downloads)
             }
         }
     }
@@ -590,7 +598,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val errorSuffix = if (errors.isNotEmpty()) " (${errors.size} failed)" else ""
-        rwgpsSendStatus = "Saved $savedCount of ${downloads.size} routes$errorSuffix"
+        rwgpsSendStatus = "Saved $savedCount of ${downloads.size} to Downloads/RideVault/RWGPS-Routes/$errorSuffix"
         if (savedCount > 0) {
             rwgpsSendCompleteCount += savedCount
         }

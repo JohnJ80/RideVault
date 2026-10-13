@@ -121,6 +121,23 @@ class RawMtpSession(
                 return null to "Could not find bulk endpoints"
             }
 
+            // Reset USB device state before opening raw MTP
+            // This clears any lingering state from Android's MtpDevice
+            try {
+                // SET_CONFIGURATION to re-initialize the device
+                connection.controlTransfer(
+                    UsbConstants.USB_DIR_OUT, // host-to-device
+                    0x09,  // SET_CONFIGURATION
+                    1,     // configuration value 1
+                    0,
+                    null, 0, 5000
+                )
+            } catch (_: Exception) {
+            }
+
+            // Re-claim interface after reset
+            connection.claimInterface(mtpInterface, true)
+
             val session = RawMtpSession(connection, bulkOut, bulkIn)
 
             // Open MTP session
@@ -389,9 +406,38 @@ class RawMtpSession(
     }
 
     /**
+     * Get vendor extension description from DeviceInfo.
+     */
+    fun getVendorExtension(): String? {
+        val (data, response) = executeGetData(OP_GET_DEVICE_INFO)
+        if (response.code != RESP_OK || data.size < 10) return null
+
+        val bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val stdVersion = bb.getShort().toInt() and 0xFFFF
+        val vendorId = bb.getInt()
+        val vendorVersion = bb.getShort().toInt() and 0xFFFF
+
+        // Read vendor extension description
+        if (bb.remaining() < 1) return "v$stdVersion vendor=0x${vendorId.toString(16)}"
+        val descLen = bb.get().toInt() and 0xFF
+        val desc = if (descLen > 0 && bb.remaining() >= descLen * 2) {
+            val chars = CharArray(descLen - 1) // -1 for null terminator
+            for (i in 0 until descLen - 1) {
+                chars[i] = bb.getShort().toInt().toChar()
+            }
+            bb.getShort() // skip null terminator
+            String(chars)
+        } else ""
+
+        return "MTP$stdVersion vendor=0x${vendorId.toString(16)} " +
+                "vendorVer=$vendorVersion ext=\"$desc\""
+    }
+
+    /**
      * Get a summary of device capabilities for diagnostics.
      */
     fun getCapabilitySummary(): String {
+        val vendorInfo = getVendorExtension() ?: ""
         val ops = getSupportedOperations()
             ?: return "Could not read DeviceInfo"
 
@@ -401,7 +447,7 @@ class RawMtpSession(
         val writeOps = ops.filter { it in 0x100C..0x1020 }
             .joinToString(", ") { "0x${it.toString(16)}" }
 
-        return "SendObjectInfo=${hasSendObjectInfo} SendObject=${hasSendObject} " +
+        return "$vendorInfo | SendObjInfo=$hasSendObjectInfo SendObj=$hasSendObject " +
                 "writeOps=[$writeOps] totalOps=${ops.size}"
     }
 
@@ -468,6 +514,9 @@ class RawMtpSession(
 
     /**
      * Send a file to the device.
+     * Tries two approaches:
+     * 1. Combined command+data in a single USB transfer
+     * 2. Standard separate transfers with extended timeout
      *
      * @return Pair of (success, statusMessage)
      */
@@ -477,54 +526,178 @@ class RawMtpSession(
         fileName: String,
         fileData: ByteArray
     ): Pair<Boolean, String> {
-        // Build the ObjectInfo dataset
         val objectInfo = buildObjectInfoDataset(
             fileName = fileName,
             fileSize = fileData.size
         )
 
-        // SendObjectInfo: command with storageId + parentHandle, then data
+        // Approach 1: Combined command+data as single USB transfer
+        // Some MTP responders parse containers from a stream and handle
+        // single-transfer better than split transfers
+        val combinedResult = trySendObjectInfoCombined(
+            storageId, parentHandle, objectInfo
+        )
+        if (combinedResult != null) {
+            // SendObjectInfo succeeded — now send the actual file data
+            val assignedHandle = combinedResult
+            sendCommand(OP_SEND_OBJECT)
+            sendDataPhase(OP_SEND_OBJECT, fileData)
+            val objResponse = readContainer()
+            transactionId++
+
+            if (objResponse.code != RESP_OK) {
+                return false to "SendObject failed: 0x${objResponse.code.toString(16)}"
+            }
+            return true to "OK (handle=$assignedHandle)"
+        }
+
+        // Approach 2: Standard separate transfers with 30s timeout
+        val stdResult = trySendObjectInfoStandard(
+            storageId, parentHandle, objectInfo
+        )
+        if (stdResult != null) {
+            val assignedHandle = stdResult
+            sendCommand(OP_SEND_OBJECT)
+            sendDataPhase(OP_SEND_OBJECT, fileData)
+            val objResponse = readContainer()
+            transactionId++
+
+            if (objResponse.code != RESP_OK) {
+                return false to "SendObject failed: 0x${objResponse.code.toString(16)}"
+            }
+            return true to "OK (handle=$assignedHandle)"
+        }
+
+        return false to "Garmin blocked write (combined=$lastCombinedDetail standard=$lastStandardDetail)"
+    }
+
+    private var lastCombinedDetail = ""
+    private var lastStandardDetail = ""
+
+    /**
+     * Try SendObjectInfo with command+data concatenated into one USB transfer.
+     * Returns assigned object handle on success, null on failure.
+     */
+    private fun trySendObjectInfoCombined(
+        storageId: Int,
+        parentHandle: Int,
+        objectInfo: ByteArray
+    ): Int? {
+        // Build command container
+        val cmdParams = intArrayOf(storageId, parentHandle)
+        val cmdLen = 12 + cmdParams.size * 4
+        val dataLen = 12 + objectInfo.size
+        val totalLen = cmdLen + dataLen
+
+        val buf = ByteBuffer.allocate(totalLen).order(ByteOrder.LITTLE_ENDIAN)
+
+        // Command container
+        buf.putInt(cmdLen)
+        buf.putShort(CONTAINER_COMMAND.toShort())
+        buf.putShort(OP_SEND_OBJECT_INFO.toShort())
+        buf.putInt(transactionId)
+        for (p in cmdParams) buf.putInt(p)
+
+        // Data container (same transaction ID)
+        buf.putInt(dataLen)
+        buf.putShort(CONTAINER_DATA.toShort())
+        buf.putShort(OP_SEND_OBJECT_INFO.toShort())
+        buf.putInt(transactionId)
+        buf.put(objectInfo)
+
+        val sent = connection.bulkTransfer(bulkOut, buf.array(), totalLen, timeout)
+        if (sent < 0) {
+            lastCombinedDetail = "send=$sent"
+            transactionId++
+            return null
+        }
+
+        // Read response with extended timeout
+        val respBuf = ByteArray(16384)
+        val bytesRead = connection.bulkTransfer(bulkIn, respBuf, respBuf.size, 30000)
+
+        if (bytesRead < 12) {
+            lastCombinedDetail = "sent=$sent read=$bytesRead"
+            // Clear state for next attempt
+            clearHalt(bulkIn)
+            clearHalt(bulkOut)
+            transactionId++
+            return null
+        }
+
+        val bb = ByteBuffer.wrap(respBuf, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
+        bb.getInt() // container length
+        val containerType = bb.getShort().toInt() and 0xFFFF
+        val code = bb.getShort().toInt() and 0xFFFF
+        bb.getInt() // transaction ID
+
+        if (containerType != CONTAINER_RESPONSE || code != RESP_OK) {
+            lastCombinedDetail = "type=$containerType code=0x${code.toString(16)}"
+            transactionId++
+            return null
+        }
+
+        // Extract assigned handle from response params
+        val paramCount = (bytesRead - 12) / 4
+        val handle = if (paramCount >= 3) {
+            bb.getInt(); bb.getInt(); bb.getInt()  // StorageID, ParentHandle, ObjectHandle
+        } else 0
+        transactionId++
+        return handle
+    }
+
+    /**
+     * Try SendObjectInfo with standard separate transfers and extended 30s read timeout.
+     * Returns assigned object handle on success, null on failure.
+     */
+    private fun trySendObjectInfoStandard(
+        storageId: Int,
+        parentHandle: Int,
+        objectInfo: ByteArray
+    ): Int? {
         val cmdResult = sendCommand(OP_SEND_OBJECT_INFO, storageId, parentHandle)
         if (cmdResult < 0) {
-            return false to "SendObjectInfo cmd send failed: sent=$cmdResult size=$lastSendSize"
+            lastStandardDetail = "cmd=$cmdResult"
+            transactionId++
+            return null
         }
         val dataResult = sendDataPhase(OP_SEND_OBJECT_INFO, objectInfo)
         if (dataResult < 0) {
-            return false to "SendObjectInfo data send failed: sent=$dataResult size=$lastSendSize"
+            lastStandardDetail = "data=$dataResult"
+            transactionId++
+            return null
         }
-        val infoResponse = readContainer()
+
+        // Extended 30s timeout for slow responders
+        val respBuf = ByteArray(16384)
+        val bytesRead = connection.bulkTransfer(bulkIn, respBuf, respBuf.size, 30000)
+
+        if (bytesRead < 12) {
+            lastStandardDetail = "cmd=$cmdResult data=$dataResult read=$bytesRead"
+            clearHalt(bulkIn)
+            clearHalt(bulkOut)
+            transactionId++
+            return null
+        }
+
+        val bb = ByteBuffer.wrap(respBuf, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
+        bb.getInt()
+        val containerType = bb.getShort().toInt() and 0xFFFF
+        val code = bb.getShort().toInt() and 0xFFFF
+        bb.getInt()
+
+        if (containerType != CONTAINER_RESPONSE || code != RESP_OK) {
+            lastStandardDetail = "type=$containerType code=0x${code.toString(16)}"
+            transactionId++
+            return null
+        }
+
+        val paramCount = (bytesRead - 12) / 4
+        val handle = if (paramCount >= 3) {
+            bb.getInt(); bb.getInt(); bb.getInt()
+        } else 0
         transactionId++
-
-        if (infoResponse.code != RESP_OK) {
-            val detail = if (infoResponse.type == -1) {
-                "no response (cmd=$cmdResult data=$dataResult " +
-                    "readResult=$lastReadResult " +
-                    "epOut=${bulkOut.maxPacketSize} epIn=${bulkIn.maxPacketSize})"
-            } else {
-                "type=${infoResponse.type} code=0x${infoResponse.code.toString(16)}"
-            }
-            return false to "SendObjectInfo failed: $detail"
-        }
-
-        // Extract the assigned object handle from response params
-        // Response params: StorageID, ParentObjectHandle, ObjectHandle
-        val assignedHandle = if (infoResponse.params.size >= 3) {
-            infoResponse.params[2]
-        } else {
-            0
-        }
-
-        // SendObject: command (no params), then data
-        sendCommand(OP_SEND_OBJECT)
-        sendDataPhase(OP_SEND_OBJECT, fileData)
-        val objResponse = readContainer()
-        transactionId++
-
-        if (objResponse.code != RESP_OK) {
-            return false to "SendObject failed: 0x${objResponse.code.toString(16)}"
-        }
-
-        return true to "OK (handle=$assignedHandle)"
+        return handle
     }
 
     // ── Helpers ─────────────────────────────────────────────

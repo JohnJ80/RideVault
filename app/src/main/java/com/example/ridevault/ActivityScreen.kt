@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsLoginSection
 
 @Composable
@@ -52,7 +53,20 @@ fun RideVaultHome(
     onDismissCourseDeleteComplete: () -> Unit,
     rwgpsLoggedIn: Boolean = false,
     rwgpsStatus: String = "",
-    onRwgpsLogout: () -> Unit = {}
+    onRwgpsLogout: () -> Unit = {},
+    rwgpsCollections: List<RwgpsApi.CollectionSummary> = emptyList(),
+    rwgpsRoutes: List<RwgpsApi.RouteSummary> = emptyList(),
+    rwgpsSelectedCollection: RwgpsApi.CollectionSummary? = null,
+    rwgpsBusy: Boolean = false,
+    rwgpsBrowseStatus: String = "",
+    rwgpsSendStatus: String = "",
+    rwgpsSendBusy: Boolean = false,
+    rwgpsSendCompleteCount: Int = 0,
+    onBrowseRwgpsCollections: () -> Unit = {},
+    onSelectRwgpsCollection: (RwgpsApi.CollectionSummary) -> Unit = {},
+    onBackFromRwgpsRoutes: () -> Unit = {},
+    onSendRouteToGarmin: (RwgpsApi.RouteSummary) -> Unit = {},
+    onDismissRwgpsSendComplete: () -> Unit = {}
 ) {
     var selectedFile by remember {
         mutableStateOf<FitFileInfo?>(null)
@@ -112,7 +126,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.26",
+                        text = "Rev 0.0.27",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -228,6 +242,39 @@ fun RideVaultHome(
                         )
                     }
                 }
+
+                if (rwgpsLoggedIn) {
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !rwgpsBusy) {
+                                selectedDomain = "rwgps_collections"
+                                onBrowseRwgpsCollections()
+                            }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp)
+                        ) {
+                            Text(
+                                text = "RWGPS Routes",
+                                style =
+                                    MaterialTheme.typography.titleLarge
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(6.dp)
+                            )
+
+                            Text(
+                                text = "Browse & send to Garmin",
+                                style =
+                                    MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -264,7 +311,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.26",
+                        text = "Rev 0.0.27",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -434,6 +481,234 @@ fun RideVaultHome(
                 }
             }
         }
+    } else if (
+        device != null &&
+        hasPermission &&
+        selectedDomain == "rwgps_collections"
+    ) {
+        // ── RWGPS Collections screen ─────────────────────────
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween,
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            selectedDomain = "home"
+                        }
+                    ) {
+                        Text("Back")
+                    }
+
+                    Text(
+                        text = "Rev 0.0.27",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                if (rwgpsSelectedCollection != null) {
+                    // ── Routes in a collection ───────────────
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = onBackFromRwgpsRoutes
+                        ) {
+                            Text("← Collections")
+                        }
+                    }
+
+                    Text(
+                        text = rwgpsSelectedCollection!!.name,
+                        style =
+                            MaterialTheme.typography.headlineMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (rwgpsBrowseStatus.isNotBlank()) {
+                        Text(
+                            text = rwgpsBrowseStatus,
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (rwgpsSendStatus.isNotBlank()) {
+                        Text(
+                            text = rwgpsSendStatus,
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (rwgpsRoutes.isEmpty() && !rwgpsBusy) {
+                        Text(
+                            text = "No routes in this collection",
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            verticalArrangement =
+                                Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items = rwgpsRoutes,
+                                key = { it.id }
+                            ) { route ->
+                                Card(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable(
+                                                enabled =
+                                                    !rwgpsSendBusy
+                                            ) {
+                                                onSendRouteToGarmin(route)
+                                            }
+                                ) {
+                                    Column(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp)
+                                    ) {
+                                        Text(
+                                            text = route.name,
+                                            style =
+                                                MaterialTheme
+                                                    .typography
+                                                    .bodyMedium
+                                        )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement =
+                                                Arrangement.SpaceBetween
+                                        ) {
+                                            val distKm = route.distanceMeters / 1000.0
+                                            val distMi = distKm * 0.621371
+                                            Text(
+                                                text = String.format("%.1f mi", distMi),
+                                                style =
+                                                    MaterialTheme
+                                                        .typography
+                                                        .bodySmall
+                                            )
+
+                                            val gainFt = route.elevationGainMeters * 3.28084
+                                            Text(
+                                                text = String.format("%.0f ft gain", gainFt),
+                                                style =
+                                                    MaterialTheme
+                                                        .typography
+                                                        .bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // ── Collections list ─────────────────────
+                    Text(
+                        text = "RWGPS Collections",
+                        style =
+                            MaterialTheme.typography.headlineMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (rwgpsBrowseStatus.isNotBlank()) {
+                        Text(
+                            text = rwgpsBrowseStatus,
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (rwgpsCollections.isEmpty() && !rwgpsBusy) {
+                        Text(
+                            text = "No collections found",
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            verticalArrangement =
+                                Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items = rwgpsCollections,
+                                key = { it.id }
+                            ) { collection ->
+                                Card(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable(
+                                                enabled = !rwgpsBusy
+                                            ) {
+                                                onSelectRwgpsCollection(collection)
+                                            }
+                                ) {
+                                    Row(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                        horizontalArrangement =
+                                            Arrangement.SpaceBetween,
+                                        verticalAlignment =
+                                            Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = collection.name,
+                                            style =
+                                                MaterialTheme
+                                                    .typography
+                                                    .bodyMedium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        Text(
+                                            text = "${collection.routeCount} routes",
+                                            style =
+                                                MaterialTheme
+                                                    .typography
+                                                    .bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     } else {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -456,7 +731,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.26",
+                        text = "Rev 0.0.27",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -844,6 +1119,23 @@ fun RideVaultHome(
             text = { Text("Deleted $courseDeleteCompleteCount courses.") },
             confirmButton = {
                 TextButton(onClick = onDismissCourseDeleteComplete) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (rwgpsSendCompleteCount > 0) {
+        AlertDialog(
+            onDismissRequest = onDismissRwgpsSendComplete,
+            title = { Text("Route sent") },
+            text = {
+                Text(
+                    "Sent $rwgpsSendCompleteCount route(s) to Garmin Courses folder."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onDismissRwgpsSendComplete) {
                     Text("OK")
                 }
             }

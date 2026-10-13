@@ -20,6 +20,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import com.example.ridevault.ui.theme.RideVaultTheme
+import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsAuth
 import com.example.ridevault.rwgps.handleRwgpsRedirect
 import androidx.lifecycle.lifecycleScope
@@ -58,6 +59,14 @@ class MainActivity : ComponentActivity() {
 
     private var rwgpsLoggedIn by mutableStateOf(false)
     private var rwgpsStatus by mutableStateOf("")
+    private var rwgpsCollections by mutableStateOf<List<RwgpsApi.CollectionSummary>>(emptyList())
+    private var rwgpsRoutes by mutableStateOf<List<RwgpsApi.RouteSummary>>(emptyList())
+    private var rwgpsSelectedCollection by mutableStateOf<RwgpsApi.CollectionSummary?>(null)
+    private var rwgpsBusy by mutableStateOf(false)
+    private var rwgpsBrowseStatus by mutableStateOf("")
+    private var rwgpsSendStatus by mutableStateOf("")
+    private var rwgpsSendBusy by mutableStateOf(false)
+    private var rwgpsSendCompleteCount by mutableIntStateOf(0)
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -197,6 +206,34 @@ class MainActivity : ComponentActivity() {
                     onRwgpsLogout = {
                         RwgpsAuth.clearToken(this@MainActivity)
                         rwgpsLoggedIn = false
+                        rwgpsCollections = emptyList()
+                        rwgpsRoutes = emptyList()
+                        rwgpsSelectedCollection = null
+                    },
+                    rwgpsCollections = rwgpsCollections,
+                    rwgpsRoutes = rwgpsRoutes,
+                    rwgpsSelectedCollection = rwgpsSelectedCollection,
+                    rwgpsBusy = rwgpsBusy,
+                    rwgpsBrowseStatus = rwgpsBrowseStatus,
+                    rwgpsSendStatus = rwgpsSendStatus,
+                    rwgpsSendBusy = rwgpsSendBusy,
+                    rwgpsSendCompleteCount = rwgpsSendCompleteCount,
+                    onBrowseRwgpsCollections = {
+                        loadRwgpsCollections()
+                    },
+                    onSelectRwgpsCollection = { collection ->
+                        loadRwgpsCollectionRoutes(collection)
+                    },
+                    onBackFromRwgpsRoutes = {
+                        rwgpsSelectedCollection = null
+                        rwgpsRoutes = emptyList()
+                        rwgpsBrowseStatus = ""
+                    },
+                    onSendRouteToGarmin = { route ->
+                        sendRwgpsRouteToGarmin(route)
+                    },
+                    onDismissRwgpsSendComplete = {
+                        rwgpsSendCompleteCount = 0
                     }
                 )
             }
@@ -221,6 +258,167 @@ class MainActivity : ComponentActivity() {
                 rwgpsStatus = ""
             } else {
                 rwgpsStatus = "RWGPS login failed: $message"
+            }
+        }
+    }
+
+    // ── RWGPS browsing ───────────────────────────────────────
+
+    private fun loadRwgpsCollections() {
+        val token = RwgpsAuth.getAccessToken(this) ?: return
+        rwgpsBusy = true
+        rwgpsBrowseStatus = "Loading collections..."
+        lifecycleScope.launch {
+            try {
+                val collections = RwgpsApi.listCollections(token)
+                rwgpsCollections = collections
+                rwgpsBrowseStatus = if (collections.isEmpty()) {
+                    "No collections found"
+                } else {
+                    ""
+                }
+            } catch (e: Exception) {
+                rwgpsBrowseStatus = "Error: ${e.message}"
+            } finally {
+                rwgpsBusy = false
+            }
+        }
+    }
+
+    private fun loadRwgpsCollectionRoutes(collection: RwgpsApi.CollectionSummary) {
+        val token = RwgpsAuth.getAccessToken(this) ?: return
+        rwgpsSelectedCollection = collection
+        rwgpsBusy = true
+        rwgpsBrowseStatus = "Loading routes..."
+        lifecycleScope.launch {
+            try {
+                val (status, routes) = RwgpsApi.listCollectionRoutes(token, collection.id)
+                rwgpsRoutes = routes
+                rwgpsBrowseStatus = if (status != "OK") {
+                    status
+                } else if (routes.isEmpty()) {
+                    "No routes in this collection"
+                } else {
+                    ""
+                }
+            } catch (e: Exception) {
+                rwgpsBrowseStatus = "Error: ${e.message}"
+            } finally {
+                rwgpsBusy = false
+            }
+        }
+    }
+
+    private fun sendRwgpsRouteToGarmin(route: RwgpsApi.RouteSummary) {
+        val token = RwgpsAuth.getAccessToken(this) ?: return
+        val device = connectedDevice ?: run {
+            rwgpsSendStatus = "No Garmin connected"
+            return
+        }
+        if (!hasUsbPermission) {
+            rwgpsSendStatus = "USB permission required"
+            return
+        }
+
+        rwgpsSendBusy = true
+        rwgpsSendStatus = "Downloading ${route.name}..."
+
+        thread {
+            try {
+                // Step 1: Download the FIT Course file from RWGPS
+                var downloadResult: Pair<String, RwgpsApi.RouteDownload?> = "" to null
+                val latch = java.util.concurrent.CountDownLatch(1)
+                lifecycleScope.launch {
+                    downloadResult = RwgpsApi.downloadRouteFitCourse(token, route)
+                    latch.countDown()
+                }
+                latch.await()
+
+                val (dlStatus, download) = downloadResult
+                if (download == null) {
+                    runOnUiThread {
+                        rwgpsSendStatus = "Download failed: $dlStatus"
+                        rwgpsSendBusy = false
+                    }
+                    return@thread
+                }
+
+                runOnUiThread {
+                    rwgpsSendStatus = "Sending ${download.fileName} to Garmin..."
+                }
+
+                // Step 2: Open MTP and push to Courses folder
+                val mtpDevice = MtpDevice(device)
+                val usbDeviceConnection = usbManager.openDevice(device)
+                if (usbDeviceConnection == null || !mtpDevice.open(usbDeviceConnection)) {
+                    runOnUiThread {
+                        rwgpsSendStatus = "Could not open MTP connection"
+                        rwgpsSendBusy = false
+                    }
+                    return@thread
+                }
+
+                try {
+                    val storageIds = mtpDevice.storageIds
+                    if (storageIds == null || storageIds.isEmpty()) {
+                        runOnUiThread {
+                            rwgpsSendStatus = "No storage found on Garmin"
+                            rwgpsSendBusy = false
+                        }
+                        return@thread
+                    }
+
+                    val storageId = storageIds[0]
+                    val coursesHandle = findCoursesFolderHandle(mtpDevice, storageId)
+                    if (coursesHandle == null) {
+                        runOnUiThread {
+                            rwgpsSendStatus = "Courses folder not found on Garmin"
+                            rwgpsSendBusy = false
+                        }
+                        return@thread
+                    }
+
+                    // Build MTP object info for the new file
+                    val objectInfo = MtpObjectInfo.Builder()
+                        .setStorageId(storageId)
+                        .setParent(coursesHandle)
+                        .setName(download.fileName)
+                        .setCompressedSize(download.data.size.toLong())
+                        .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
+                        .build()
+
+                    val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                    if (sentInfo == null) {
+                        runOnUiThread {
+                            rwgpsSendStatus = "Failed to create file on Garmin"
+                            rwgpsSendBusy = false
+                        }
+                        return@thread
+                    }
+
+                    val success = mtpDevice.sendObject(
+                        sentInfo.objectHandle,
+                        download.data.size.toLong(),
+                        download.data
+                    )
+
+                    runOnUiThread {
+                        if (success) {
+                            rwgpsSendStatus = "Sent ${download.fileName} to Garmin"
+                            rwgpsSendCompleteCount++
+                        } else {
+                            rwgpsSendStatus = "Failed to send file data to Garmin"
+                        }
+                        rwgpsSendBusy = false
+                    }
+                } finally {
+                    try { mtpDevice.close() } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
+                    rwgpsSendBusy = false
+                }
             }
         }
     }

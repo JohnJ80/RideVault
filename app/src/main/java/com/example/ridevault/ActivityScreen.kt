@@ -127,7 +127,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.31",
+                        text = "Rev 0.0.32",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -312,7 +312,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.31",
+                        text = "Rev 0.0.32",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -513,7 +513,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.31",
+                        text = "Rev 0.0.32",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -747,7 +747,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.31",
+                        text = "Rev 0.0.32",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }

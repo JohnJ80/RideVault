@@ -50,11 +50,22 @@ class RawMtpSession(
             device: UsbDevice,
             connection: UsbDeviceConnection
         ): Pair<RawMtpSession?, String> {
-            // Find the MTP interface (class 6 = Still Image / PTP/MTP)
+            // Collect interface info for diagnostics
+            val ifaceInfo = StringBuilder()
+            for (i in 0 until device.interfaceCount) {
+                val iface = device.getInterface(i)
+                ifaceInfo.append("iface[$i] class=${iface.interfaceClass} " +
+                    "sub=${iface.interfaceSubclass} proto=${iface.interfaceProtocol} " +
+                    "eps=${iface.endpointCount}; ")
+            }
+
+            // Find the MTP interface:
+            // 1. class 6 = Still Image (PTP/MTP)
+            // 2. class 255 subclass 1 = vendor-specific MTP
+            // 3. Fallback: any interface with bulk in + bulk out endpoints
             var mtpInterface: UsbInterface? = null
             for (i in 0 until device.interfaceCount) {
                 val iface = device.getInterface(i)
-                // Class 6 = Still Image (PTP/MTP), or class 255 = vendor-specific
                 if (iface.interfaceClass == 6 ||
                     (iface.interfaceClass == 255 && iface.interfaceSubclass == 1)
                 ) {
@@ -63,8 +74,28 @@ class RawMtpSession(
                 }
             }
 
+            // Fallback: find any interface with both bulk in and bulk out
             if (mtpInterface == null) {
-                return null to "No MTP interface found"
+                for (i in 0 until device.interfaceCount) {
+                    val iface = device.getInterface(i)
+                    var hasIn = false
+                    var hasOut = false
+                    for (e in 0 until iface.endpointCount) {
+                        val ep = iface.getEndpoint(e)
+                        if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                            if (ep.direction == UsbConstants.USB_DIR_OUT) hasOut = true
+                            else hasIn = true
+                        }
+                    }
+                    if (hasIn && hasOut) {
+                        mtpInterface = iface
+                        break
+                    }
+                }
+            }
+
+            if (mtpInterface == null) {
+                return null to "No MTP interface found ($ifaceInfo)"
             }
 
             if (!connection.claimInterface(mtpInterface, true)) {

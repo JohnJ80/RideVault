@@ -20,7 +20,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.documentfile.DocumentFile
 import com.example.ridevault.ui.theme.RideVaultTheme
 import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsAuth
@@ -425,9 +424,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun doWriteGpxFiles(folderUri: Uri, downloads: List<RwgpsApi.RouteDownload>) {
-        val folder = DocumentFile.fromTreeUri(this, folderUri)
-        if (folder == null || !folder.canWrite()) {
+    private fun doWriteGpxFiles(treeUri: Uri, downloads: List<RwgpsApi.RouteDownload>) {
+        // Build the document ID for the tree root
+        val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+
+        // Quick check that we can still query this folder
+        try {
+            contentResolver.query(parentUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.close()
+        } catch (_: Exception) {
             // Permission lost — clear saved URI and re-prompt
             getSharedPreferences("garmin_saf", MODE_PRIVATE)
                 .edit().remove("folder_uri").apply()
@@ -441,25 +446,48 @@ class MainActivity : ComponentActivity() {
         var sentCount = 0
         val errors = mutableListOf<String>()
 
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+
         for ((index, download) in downloads.withIndex()) {
             rwgpsSendStatus =
                 "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
 
             try {
-                // Check if file already exists — overwrite it
-                val existing = folder.findFile(download.fileName)
-                val docFile = if (existing != null && existing.canWrite()) {
-                    existing
-                } else {
-                    folder.createFile("application/gpx+xml", download.fileName)
+                // Check if file already exists
+                var existingDocUri: Uri? = null
+                contentResolver.query(
+                    childrenUri,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                    ),
+                    null, null, null
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameCol)
+                        if (name.equals(download.fileName, ignoreCase = true)) {
+                            val docId = cursor.getString(idCol)
+                            existingDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                            break
+                        }
+                    }
                 }
 
-                if (docFile == null) {
+                val fileUri = existingDocUri ?: DocumentsContract.createDocument(
+                    contentResolver,
+                    parentUri,
+                    "application/gpx+xml",
+                    download.fileName
+                )
+
+                if (fileUri == null) {
                     errors.add("${download.fileName}: could not create file")
                     continue
                 }
 
-                contentResolver.openOutputStream(docFile.uri, "wt")?.use { out ->
+                contentResolver.openOutputStream(fileUri, "wt")?.use { out ->
                     out.write(download.data)
                     out.flush()
                     sentCount++

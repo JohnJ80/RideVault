@@ -51,8 +51,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // SAF DocumentFile for writing to USB-connected Garmin
-    implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

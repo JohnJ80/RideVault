@@ -51,6 +51,7 @@ fun RideVaultHome(
     onDeleteAllCourses: () -> Unit,
     onDismissCourseDeleteComplete: () -> Unit,
     rwgpsLoggedIn: Boolean = false,
+    rwgpsStatus: String = "",
     onRwgpsLogout: () -> Unit = {}
 ) {
     var selectedFile by remember {
@@ -121,6 +122,7 @@ fun RideVaultHome(
 
                 RwgpsLoginSection(
                     loggedIn = rwgpsLoggedIn,
+                    status = rwgpsStatus,
                     onLogout = onRwgpsLogout
                 )
 

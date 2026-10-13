@@ -43,7 +43,10 @@ object RwgpsAuth {
         return Intent(Intent.ACTION_VIEW, uri)
     }
 
-    suspend fun exchangeCodeForToken(context: Context, code: String): Boolean =
+    /**
+     * Returns a pair: success boolean + diagnostic message.
+     */
+    suspend fun exchangeCodeForToken(context: Context, code: String): Pair<Boolean, String> =
         withContext(Dispatchers.IO) {
             try {
                 val body = FormBody.Builder()
@@ -60,19 +63,28 @@ object RwgpsAuth {
                     .build()
 
                 http.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext false
+                    if (!response.isSuccessful) {
+                        return@withContext false to
+                            "HTTP ${response.code}: ${response.body?.string()?.take(200) ?: "no body"}"
+                    }
 
-                    val json = JSONObject(response.body?.string() ?: return@withContext false)
+                    val responseBody = response.body?.string()
+                        ?: return@withContext false to "Empty response body"
+
+                    val json = JSONObject(responseBody)
                     val token = json.optString("access_token")
                     val userId = json.optInt("user_id", -1)
 
-                    if (token.isBlank()) return@withContext false
+                    if (token.isBlank()) {
+                        return@withContext false to
+                            "No access_token in response: ${responseBody.take(200)}"
+                    }
 
                     saveToken(context, token, userId)
-                    true
+                    true to "OK"
                 }
-            } catch (_: Exception) {
-                false
+            } catch (e: Exception) {
+                false to "${e.javaClass.simpleName}: ${e.message}"
             }
         }
 

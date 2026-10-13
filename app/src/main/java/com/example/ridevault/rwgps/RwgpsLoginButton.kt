@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun RwgpsLoginSection(
     loggedIn: Boolean,
+    status: String = "",
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -31,6 +32,10 @@ fun RwgpsLoginSection(
             text = if (loggedIn) "Ride with GPS: logged in"
                    else "Ride with GPS: not logged in"
         )
+        if (status.isNotBlank()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = status)
+        }
         Spacer(modifier = Modifier.height(8.dp))
 
         if (!loggedIn) {
@@ -58,14 +63,14 @@ fun RwgpsLoginSection(
  * Call this from MainActivity.onNewIntent (or onCreate) when the
  * ridevault://oauth/callback redirect arrives.
  */
-suspend fun handleRwgpsRedirect(context: Context, intent: Intent?): Boolean {
-    val data: Uri = intent?.data ?: return false
-    if (data.scheme != "ridevault" || data.host != "oauth") return false
+suspend fun handleRwgpsRedirect(context: Context, intent: Intent?): Pair<Boolean, String> {
+    val data: Uri = intent?.data ?: return false to "No intent data"
+    if (data.scheme != "ridevault" || data.host != "oauth") return false to "Not an OAuth redirect"
 
-    val code = data.getQueryParameter("code") ?: return false
+    val code = data.getQueryParameter("code") ?: return false to "No code parameter"
     return try {
         RwgpsAuth.exchangeCodeForToken(context, code)
-    } catch (_: Exception) {
-        false
+    } catch (e: Exception) {
+        false to "${e.javaClass.simpleName}: ${e.message}"
     }
 }

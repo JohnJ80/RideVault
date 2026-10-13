@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private var courseDeleteCompleteCount by mutableIntStateOf(0)
 
     private var rwgpsLoggedIn by mutableStateOf(false)
+    private var rwgpsStatus by mutableStateOf("")
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -192,6 +193,7 @@ class MainActivity : ComponentActivity() {
                         courseDeleteCompleteCount = 0
                     },
                     rwgpsLoggedIn = rwgpsLoggedIn,
+                    rwgpsStatus = rwgpsStatus,
                     onRwgpsLogout = {
                         RwgpsAuth.clearToken(this@MainActivity)
                         rwgpsLoggedIn = false
@@ -208,9 +210,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleOauthRedirect(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "ridevault") return
+
+        rwgpsStatus = "Exchanging authorization code..."
         lifecycleScope.launch {
-            if (handleRwgpsRedirect(this@MainActivity, intent)) {
+            val (success, message) = handleRwgpsRedirect(this@MainActivity, intent)
+            if (success) {
                 rwgpsLoggedIn = true
+                rwgpsStatus = ""
+            } else {
+                rwgpsStatus = "RWGPS login failed: $message"
             }
         }
     }

@@ -328,7 +328,7 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                saveGpxToDownloads(listOf(download))
+                writeGpxFilesToGarmin(listOf(download))
             } catch (e: Exception) {
                 rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
                 rwgpsSendBusy = false
@@ -370,11 +370,135 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                saveGpxToDownloads(downloads)
+                writeGpxFilesToGarmin(downloads)
             } catch (e: Exception) {
                 rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
                 rwgpsSendBusy = false
             }
+        }
+    }
+
+    /**
+     * Write GPX files to the Garmin via raw USB MTP.
+     * Falls back to saving to Downloads if Garmin is not connected.
+     */
+    private fun writeGpxFilesToGarmin(downloads: List<RwgpsApi.RouteDownload>) {
+        val device = connectedDevice
+        if (device == null || !usbManager.hasPermission(device)) {
+            // No Garmin connected — save to Downloads
+            rwgpsSendStatus = "Garmin not connected — saving to Downloads..."
+            saveGpxToDownloads(downloads)
+            return
+        }
+
+        rwgpsSendBusy = true
+        rwgpsSendStatus = "Opening USB connection to Garmin..."
+
+        thread(start = true) {
+            val result = writeGpxViaRawMtp(device, downloads)
+            runOnUiThread {
+                rwgpsSendStatus = result.first
+                if (result.second > 0) {
+                    rwgpsSendCompleteCount += result.second
+                }
+                rwgpsSendBusy = false
+            }
+        }
+    }
+
+    /**
+     * Write GPX files to the Garmin using raw USB MTP protocol.
+     * Returns (statusMessage, sentCount).
+     */
+    private fun writeGpxViaRawMtp(
+        device: UsbDevice,
+        downloads: List<RwgpsApi.RouteDownload>
+    ): Pair<String, Int> {
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection" to 0
+
+        try {
+            val (session, openStatus) = RawMtpSession.open(device, connection)
+            if (session == null) {
+                return "Raw MTP: $openStatus" to 0
+            }
+
+            try {
+                // Get storage
+                val storageIds = session.getStorageIds()
+                if (storageIds == null || storageIds.isEmpty()) {
+                    return "No MTP storage found" to 0
+                }
+                val storageId = storageIds[0]
+
+                // Navigate to Garmin/NewFiles
+                val rootHandles = session.getObjectHandles(storageId, 0, -1)
+                    ?: return "Could not read root" to 0
+
+                var garminHandle: Int? = null
+                for (handle in rootHandles) {
+                    val name = session.getObjectName(handle)
+                    if (name.equals("Garmin", ignoreCase = true)) {
+                        garminHandle = handle
+                        break
+                    }
+                }
+                if (garminHandle == null) {
+                    return "Garmin folder not found" to 0
+                }
+
+                // Try NewFiles first, then Courses
+                var targetHandle = session.findChildFolder(
+                    storageId, garminHandle, "NewFiles"
+                )
+                var targetFolder = "NewFiles"
+                if (targetHandle == null) {
+                    targetHandle = session.findChildFolder(
+                        storageId, garminHandle, "Courses"
+                    )
+                    targetFolder = "Courses"
+                }
+                if (targetHandle == null) {
+                    return "Neither NewFiles nor Courses folder found" to 0
+                }
+
+                // Send each GPX file
+                var sentCount = 0
+                val errors = mutableListOf<String>()
+
+                for ((index, download) in downloads.withIndex()) {
+                    runOnUiThread {
+                        rwgpsSendStatus =
+                            "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
+                    }
+
+                    val (success, sendStatus) = session.sendFile(
+                        storageId = storageId,
+                        parentHandle = targetHandle,
+                        fileName = download.fileName,
+                        fileData = download.data
+                    )
+
+                    if (success) {
+                        sentCount++
+                    } else {
+                        errors.add("${download.fileName}: $sendStatus")
+                    }
+                }
+
+                val errorSuffix = if (errors.isNotEmpty()) {
+                    " (${errors.size} failed: ${errors.first()})"
+                } else ""
+
+                return "Sent $sentCount of ${downloads.size} to $targetFolder$errorSuffix" to sentCount
+
+            } finally {
+                session.closeSession()
+            }
+        } catch (e: Exception) {
+            return "Raw MTP error: ${e.javaClass.simpleName}: ${e.message}" to 0
+        } finally {
+            connection.close()
         }
     }
 

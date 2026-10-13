@@ -18,7 +18,9 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.documentfile.DocumentFile
 import com.example.ridevault.ui.theme.RideVaultTheme
 import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsAuth
@@ -67,6 +69,33 @@ class MainActivity : ComponentActivity() {
     private var rwgpsSendStatus by mutableStateOf("")
     private var rwgpsSendBusy by mutableStateOf(false)
     private var rwgpsSendCompleteCount by mutableIntStateOf(0)
+
+    // SAF folder picker for writing GPX files to Garmin
+    private var pendingSafAction: (() -> Unit)? = null
+
+    private val safFolderPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            // Persist permission so user doesn't have to pick again
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            getSharedPreferences("garmin_saf", MODE_PRIVATE)
+                .edit()
+                .putString("folder_uri", uri.toString())
+                .apply()
+            // Resume the pending send action
+            pendingSafAction?.invoke()
+            pendingSafAction = null
+        } else {
+            rwgpsSendStatus = "Folder selection cancelled"
+            rwgpsSendBusy = false
+            pendingSafAction = null
+        }
+    }
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -314,123 +343,29 @@ class MainActivity : ComponentActivity() {
 
     private fun sendRwgpsRouteToGarmin(route: RwgpsApi.RouteSummary) {
         val token = RwgpsAuth.getAccessToken(this) ?: return
-        val device = connectedDevice ?: run {
-            rwgpsSendStatus = "No Garmin connected"
-            return
-        }
-        if (!hasUsbPermission) {
-            rwgpsSendStatus = "USB permission required"
-            return
-        }
 
         rwgpsSendBusy = true
         rwgpsSendStatus = "Downloading ${route.name}..."
 
-        thread {
+        lifecycleScope.launch {
             try {
-                // Step 1: Download the route as GPX from RWGPS
-                var downloadResult: Pair<String, RwgpsApi.RouteDownload?> = "" to null
-                val latch = java.util.concurrent.CountDownLatch(1)
-                lifecycleScope.launch {
-                    downloadResult = RwgpsApi.downloadRouteGpx(token, route)
-                    latch.countDown()
-                }
-                latch.await()
-
-                val (dlStatus, download) = downloadResult
+                val (dlStatus, download) = RwgpsApi.downloadRouteGpx(token, route)
                 if (download == null) {
-                    runOnUiThread {
-                        rwgpsSendStatus = "Download failed: $dlStatus"
-                        rwgpsSendBusy = false
-                    }
-                    return@thread
-                }
-
-                runOnUiThread {
-                    rwgpsSendStatus = "Sending ${download.fileName} to Garmin..."
-                }
-
-                // Step 2: Open MTP and push to Courses folder
-                val mtpDevice = MtpDevice(device)
-                val usbDeviceConnection = usbManager.openDevice(device)
-                if (usbDeviceConnection == null || !mtpDevice.open(usbDeviceConnection)) {
-                    runOnUiThread {
-                        rwgpsSendStatus = "Could not open MTP connection"
-                        rwgpsSendBusy = false
-                    }
-                    return@thread
-                }
-
-                try {
-                    val storageIds = mtpDevice.storageIds
-                    if (storageIds == null || storageIds.isEmpty()) {
-                        runOnUiThread {
-                            rwgpsSendStatus = "No storage found on Garmin"
-                            rwgpsSendBusy = false
-                        }
-                        return@thread
-                    }
-
-                    val storageId = storageIds[0]
-                    val (folderName, targetHandle) = findNewFilesFolderHandle(mtpDevice, storageId)
-                    if (targetHandle == null) {
-                        runOnUiThread {
-                            rwgpsSendStatus = folderName // error message
-                            rwgpsSendBusy = false
-                        }
-                        return@thread
-                    }
-
-                    runOnUiThread {
-                        rwgpsSendStatus = "Sending ${download.fileName} to Garmin/$folderName..."
-                    }
-
-                    // Try sending with minimal object info (no size declared)
-                    val sentInfo = sendFileToMtp(
-                        mtpDevice = mtpDevice,
-                        storageId = storageId,
-                        parentHandle = targetHandle,
-                        fileName = download.fileName,
-                        data = download.data
-                    )
-                    if (sentInfo == null) {
-                        runOnUiThread {
-                            rwgpsSendStatus =
-                                "Failed to create ${download.fileName} " +
-                                "in $folderName (handle=$targetHandle, " +
-                                "${download.data.size} bytes, storage=$storageId)"
-                            rwgpsSendBusy = false
-                        }
-                        return@thread
-                    }
-
-                    runOnUiThread {
-                        rwgpsSendStatus = "Sent ${download.fileName} to Garmin/$folderName"
-                        rwgpsSendCompleteCount++
-                        rwgpsSendBusy = false
-                    }
-                } finally {
-                    try { mtpDevice.close() } catch (_: Exception) {}
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
+                    rwgpsSendStatus = "Download failed: $dlStatus"
                     rwgpsSendBusy = false
+                    return@launch
                 }
+
+                writeGpxFilesToGarmin(listOf(download))
+            } catch (e: Exception) {
+                rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
+                rwgpsSendBusy = false
             }
         }
     }
 
     private fun sendAllRwgpsRoutesToGarmin() {
         val token = RwgpsAuth.getAccessToken(this) ?: return
-        val device = connectedDevice ?: run {
-            rwgpsSendStatus = "No Garmin connected"
-            return
-        }
-        if (!hasUsbPermission) {
-            rwgpsSendStatus = "USB permission required"
-            return
-        }
         val routes = rwgpsRoutes
         if (routes.isEmpty()) {
             rwgpsSendStatus = "No routes to send"
@@ -440,27 +375,16 @@ class MainActivity : ComponentActivity() {
         rwgpsSendBusy = true
         rwgpsSendStatus = "Downloading ${routes.size} routes..."
 
-        thread {
+        lifecycleScope.launch {
             try {
-                // Step 1: Download all routes as GPX
                 val downloads = mutableListOf<RwgpsApi.RouteDownload>()
                 val errors = mutableListOf<String>()
 
                 for ((index, route) in routes.withIndex()) {
-                    runOnUiThread {
-                        rwgpsSendStatus =
-                            "Downloading ${index + 1} of ${routes.size}: ${route.name}..."
-                    }
+                    rwgpsSendStatus =
+                        "Downloading ${index + 1} of ${routes.size}: ${route.name}..."
 
-                    var downloadResult: Pair<String, RwgpsApi.RouteDownload?> = "" to null
-                    val latch = java.util.concurrent.CountDownLatch(1)
-                    lifecycleScope.launch {
-                        downloadResult = RwgpsApi.downloadRouteGpx(token, route)
-                        latch.countDown()
-                    }
-                    latch.await()
-
-                    val (dlStatus, download) = downloadResult
+                    val (dlStatus, download) = RwgpsApi.downloadRouteGpx(token, route)
                     if (download != null) {
                         downloads.add(download)
                     } else {
@@ -469,86 +393,103 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (downloads.isEmpty()) {
-                    runOnUiThread {
-                        rwgpsSendStatus = "All downloads failed"
-                        rwgpsSendBusy = false
-                    }
-                    return@thread
+                    rwgpsSendStatus = "All downloads failed"
+                    rwgpsSendBusy = false
+                    return@launch
                 }
 
-                // Step 2: Open MTP and push all files to Courses folder
-                runOnUiThread {
-                    rwgpsSendStatus = "Connecting to Garmin..."
+                writeGpxFilesToGarmin(downloads)
+            } catch (e: Exception) {
+                rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
+                rwgpsSendBusy = false
+            }
+        }
+    }
+
+    // ── SAF-based file writing to Garmin ────────────────────
+
+    /**
+     * Write downloaded GPX files to the Garmin via Storage Access Framework.
+     * If no folder has been picked yet, launches the folder picker and
+     * resumes automatically after the user selects a folder.
+     */
+    private fun writeGpxFilesToGarmin(downloads: List<RwgpsApi.RouteDownload>) {
+        val savedUri = getSavedGarminFolderUri()
+        if (savedUri != null && hasPersistedPermission(savedUri)) {
+            doWriteGpxFiles(savedUri, downloads)
+        } else {
+            // Need user to pick the Garmin folder
+            rwgpsSendStatus = "Pick the Garmin folder (e.g. NewFiles or Courses)..."
+            pendingSafAction = { writeGpxFilesToGarmin(downloads) }
+            safFolderPicker.launch(null)
+        }
+    }
+
+    private fun doWriteGpxFiles(folderUri: Uri, downloads: List<RwgpsApi.RouteDownload>) {
+        val folder = DocumentFile.fromTreeUri(this, folderUri)
+        if (folder == null || !folder.canWrite()) {
+            // Permission lost — clear saved URI and re-prompt
+            getSharedPreferences("garmin_saf", MODE_PRIVATE)
+                .edit().remove("folder_uri").apply()
+            rwgpsSendStatus = "Folder access lost — pick the Garmin folder again..."
+            pendingSafAction = { writeGpxFilesToGarmin(downloads) }
+            safFolderPicker.launch(null)
+            return
+        }
+
+        rwgpsSendBusy = true
+        var sentCount = 0
+        val errors = mutableListOf<String>()
+
+        for ((index, download) in downloads.withIndex()) {
+            rwgpsSendStatus =
+                "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
+
+            try {
+                // Check if file already exists — overwrite it
+                val existing = folder.findFile(download.fileName)
+                val docFile = if (existing != null && existing.canWrite()) {
+                    existing
+                } else {
+                    folder.createFile("application/gpx+xml", download.fileName)
                 }
 
-                val mtpDevice = MtpDevice(device)
-                val usbDeviceConnection = usbManager.openDevice(device)
-                if (usbDeviceConnection == null || !mtpDevice.open(usbDeviceConnection)) {
-                    runOnUiThread {
-                        rwgpsSendStatus = "Could not open MTP connection"
-                        rwgpsSendBusy = false
-                    }
-                    return@thread
+                if (docFile == null) {
+                    errors.add("${download.fileName}: could not create file")
+                    continue
                 }
 
-                try {
-                    val storageIds = mtpDevice.storageIds
-                    if (storageIds == null || storageIds.isEmpty()) {
-                        runOnUiThread {
-                            rwgpsSendStatus = "No storage found on Garmin"
-                            rwgpsSendBusy = false
-                        }
-                        return@thread
-                    }
-
-                    val storageId = storageIds[0]
-                    val (folderName, targetHandle) = findNewFilesFolderHandle(mtpDevice, storageId)
-                    if (targetHandle == null) {
-                        runOnUiThread {
-                            rwgpsSendStatus = folderName // error message
-                            rwgpsSendBusy = false
-                        }
-                        return@thread
-                    }
-
-                    var sentCount = 0
-                    for ((index, download) in downloads.withIndex()) {
-                        runOnUiThread {
-                            rwgpsSendStatus =
-                                "Sending ${index + 1} of ${downloads.size} to $folderName: ${download.fileName}..."
-                        }
-
-                        val result = sendFileToMtp(
-                            mtpDevice = mtpDevice,
-                            storageId = storageId,
-                            parentHandle = targetHandle,
-                            fileName = download.fileName,
-                            data = download.data
-                        )
-                        if (result != null) {
-                            sentCount++
-                        } else {
-                            errors.add("${download.fileName}: failed to create on device")
-                        }
-                    }
-
-                    runOnUiThread {
-                        val errorSuffix = if (errors.isNotEmpty()) {
-                            " (${errors.size} failed)"
-                        } else ""
-                        rwgpsSendStatus = "Sent $sentCount of ${routes.size} routes$errorSuffix"
-                        rwgpsSendCompleteCount += sentCount
-                        rwgpsSendBusy = false
-                    }
-                } finally {
-                    try { mtpDevice.close() } catch (_: Exception) {}
+                contentResolver.openOutputStream(docFile.uri, "wt")?.use { out ->
+                    out.write(download.data)
+                    out.flush()
+                    sentCount++
+                } ?: run {
+                    errors.add("${download.fileName}: could not open for writing")
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
-                    rwgpsSendBusy = false
-                }
+                errors.add("${download.fileName}: ${e.message}")
             }
+        }
+
+        val errorSuffix = if (errors.isNotEmpty()) {
+            " (${errors.size} failed)"
+        } else ""
+        rwgpsSendStatus = "Sent $sentCount of ${downloads.size} routes$errorSuffix"
+        if (sentCount > 0) {
+            rwgpsSendCompleteCount += sentCount
+        }
+        rwgpsSendBusy = false
+    }
+
+    private fun getSavedGarminFolderUri(): Uri? {
+        val uriStr = getSharedPreferences("garmin_saf", MODE_PRIVATE)
+            .getString("folder_uri", null) ?: return null
+        return Uri.parse(uriStr)
+    }
+
+    private fun hasPersistedPermission(uri: Uri): Boolean {
+        return contentResolver.persistedUriPermissions.any {
+            it.uri == uri && it.isWritePermission
         }
     }
 
@@ -899,78 +840,6 @@ class MainActivity : ComponentActivity() {
             ?.first
     }
 
-    /**
-     * Try to create and send a file to the Garmin via MTP.
-     * Attempts multiple format/size combinations since Garmin MTP
-     * implementations vary in what they accept.
-     * Returns the MtpObjectInfo on success, null on failure.
-     */
-    private fun sendFileToMtp(
-        mtpDevice: MtpDevice,
-        storageId: Int,
-        parentHandle: Int,
-        fileName: String,
-        data: ByteArray
-    ): MtpObjectInfo? {
-        // Try different combinations — Garmin MTP can be picky
-        val attempts = listOf(
-            // Attempt 1: no size, FORMAT_UNDEFINED
-            Triple(0L, android.mtp.MtpConstants.FORMAT_UNDEFINED, "no-size/undefined"),
-            // Attempt 2: with size, FORMAT_UNDEFINED
-            Triple(data.size.toLong(), android.mtp.MtpConstants.FORMAT_UNDEFINED, "sized/undefined"),
-            // Attempt 3: no size, FORMAT_TEXT
-            Triple(0L, android.mtp.MtpConstants.FORMAT_TEXT, "no-size/text"),
-            // Attempt 4: with size, FORMAT_TEXT
-            Triple(data.size.toLong(), android.mtp.MtpConstants.FORMAT_TEXT, "sized/text"),
-        )
-
-        for ((compressedSize, format, label) in attempts) {
-            val builder = MtpObjectInfo.Builder()
-                .setStorageId(storageId)
-                .setParent(parentHandle)
-                .setName(fileName)
-                .setFormat(format)
-
-            if (compressedSize > 0) {
-                builder.setCompressedSize(compressedSize)
-            }
-
-            val objectInfo = builder.build()
-            val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
-
-            if (sentInfo != null) {
-                // sendObjectInfo succeeded — now send the data
-                val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
-                try {
-                    tempFile.writeBytes(data)
-
-                    val pfd = android.os.ParcelFileDescriptor.open(
-                        tempFile,
-                        android.os.ParcelFileDescriptor.MODE_READ_ONLY
-                    )
-
-                    val success = pfd.use {
-                        mtpDevice.sendObject(
-                            sentInfo.objectHandle,
-                            data.size.toLong(),
-                            it
-                        )
-                    }
-
-                    if (success) {
-                        return sentInfo
-                    }
-                } finally {
-                    tempFile.delete()
-                }
-            }
-
-            Thread.sleep(100)
-        }
-
-        return null
-    }
-
     private fun findCoursesFolderHandle(
         mtpDevice: MtpDevice,
         storageId: Int
@@ -986,45 +855,6 @@ class MainActivity : ComponentActivity() {
             garminHandle = garminHandle,
             folderName = "Courses"
         )
-    }
-
-    /**
-     * Find the NewFiles folder on the Garmin for importing GPX courses.
-     * The Garmin processes files placed here on next reboot.
-     * Falls back to Courses folder if NewFiles not found.
-     */
-    private fun findNewFilesFolderHandle(
-        mtpDevice: MtpDevice,
-        storageId: Int
-    ): Pair<String, Int?> {
-        val garminHandle = findGarminFolderHandle(
-            mtpDevice = mtpDevice,
-            storageId = storageId
-        ) ?: return "Garmin folder not found" to null
-
-        // Try NewFiles first (standard Garmin import folder)
-        val newFilesHandle = findGarminChildFolderHandle(
-            mtpDevice = mtpDevice,
-            storageId = storageId,
-            garminHandle = garminHandle,
-            folderName = "NewFiles"
-        )
-        if (newFilesHandle != null) {
-            return "NewFiles" to newFilesHandle
-        }
-
-        // Fall back to Courses
-        val coursesHandle = findGarminChildFolderHandle(
-            mtpDevice = mtpDevice,
-            storageId = storageId,
-            garminHandle = garminHandle,
-            folderName = "Courses"
-        )
-        if (coursesHandle != null) {
-            return "Courses" to coursesHandle
-        }
-
-        return "Neither NewFiles nor Courses folder found" to null
     }
 
     private fun enumerateCourseFilesOnDevice(

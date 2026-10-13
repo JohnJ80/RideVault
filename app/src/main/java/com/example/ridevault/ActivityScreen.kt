@@ -775,9 +775,9 @@ fun RideVaultHome(
             title = { Text("Download complete") },
             text = {
                 Column {
-                    Text("Downloaded ${summary.count} activities.")
+                    Text("Downloaded ${summary.verifiedCount} activities.")
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("Total size: ${formatFileSize(summary.totalBytes)}")
+                    Text("Total size: ${formatFileSize(summary.files.sumOf { it.sizeBytes })}")
                 }
             },
             confirmButton = {
@@ -812,9 +812,9 @@ fun RideVaultHome(
             title = { Text("Backup complete") },
             text = {
                 Column {
-                    Text("Backed up ${summary.count} courses.")
+                    Text("Backed up ${summary.verifiedCount} courses.")
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("Total size: ${formatFileSize(summary.totalBytes)}")
+                    Text("Total size: ${formatFileSize(summary.totalSizeBytes)}")
                 }
             },
             confirmButton = {

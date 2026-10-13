@@ -385,62 +385,29 @@ class MainActivity : ComponentActivity() {
                         rwgpsSendStatus = "Sending ${download.fileName} to Garmin/$folderName..."
                     }
 
-                    // Build MTP object info for the new file
-                    val objectInfo = MtpObjectInfo.Builder()
-                        .setStorageId(storageId)
-                        .setParent(targetHandle)
-                        .setName(download.fileName)
-                        .setCompressedSize(download.data.size.toLong())
-                        .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
-                        .build()
-
-                    // Retry sendObjectInfo — Garmin MTP can be slow
-                    var sentInfo = mtpDevice.sendObjectInfo(objectInfo)
-                    var sendRetry = 0
-                    while (sentInfo == null && sendRetry < 3) {
-                        Thread.sleep(200)
-                        sendRetry++
-                        sentInfo = mtpDevice.sendObjectInfo(objectInfo)
-                    }
+                    // Try sending with minimal object info (no size declared)
+                    val sentInfo = sendFileToMtp(
+                        mtpDevice = mtpDevice,
+                        storageId = storageId,
+                        parentHandle = targetHandle,
+                        fileName = download.fileName,
+                        data = download.data
+                    )
                     if (sentInfo == null) {
                         runOnUiThread {
                             rwgpsSendStatus =
                                 "Failed to create ${download.fileName} " +
-                                "(${download.data.size} bytes) on Garmin"
+                                "in $folderName (handle=$targetHandle, " +
+                                "${download.data.size} bytes, storage=$storageId)"
                             rwgpsSendBusy = false
                         }
                         return@thread
                     }
 
-                    // Write bytes to a temp file for ParcelFileDescriptor
-                    val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
-                    try {
-                        tempFile.writeBytes(download.data)
-
-                        val pfd = android.os.ParcelFileDescriptor.open(
-                            tempFile,
-                            android.os.ParcelFileDescriptor.MODE_READ_ONLY
-                        )
-
-                        val success = pfd.use {
-                            mtpDevice.sendObject(
-                                sentInfo.objectHandle,
-                                download.data.size.toLong(),
-                                it
-                            )
-                        }
-
-                        runOnUiThread {
-                            if (success) {
-                                rwgpsSendStatus = "Sent ${download.fileName} to Garmin"
-                                rwgpsSendCompleteCount++
-                            } else {
-                                rwgpsSendStatus = "Failed to send file data to Garmin"
-                            }
-                            rwgpsSendBusy = false
-                        }
-                    } finally {
-                        tempFile.delete()
+                    runOnUiThread {
+                        rwgpsSendStatus = "Sent ${download.fileName} to Garmin/$folderName"
+                        rwgpsSendCompleteCount++
+                        rwgpsSendBusy = false
                     }
                 } finally {
                     try { mtpDevice.close() } catch (_: Exception) {}
@@ -551,50 +518,17 @@ class MainActivity : ComponentActivity() {
                                 "Sending ${index + 1} of ${downloads.size} to $folderName: ${download.fileName}..."
                         }
 
-                        val objectInfo = MtpObjectInfo.Builder()
-                            .setStorageId(storageId)
-                            .setParent(targetHandle)
-                            .setName(download.fileName)
-                            .setCompressedSize(download.data.size.toLong())
-                            .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
-                            .build()
-
-                        var sentInfo = mtpDevice.sendObjectInfo(objectInfo)
-                        var sendRetry = 0
-                        while (sentInfo == null && sendRetry < 3) {
-                            Thread.sleep(200)
-                            sendRetry++
-                            sentInfo = mtpDevice.sendObjectInfo(objectInfo)
-                        }
-                        if (sentInfo == null) {
+                        val result = sendFileToMtp(
+                            mtpDevice = mtpDevice,
+                            storageId = storageId,
+                            parentHandle = targetHandle,
+                            fileName = download.fileName,
+                            data = download.data
+                        )
+                        if (result != null) {
+                            sentCount++
+                        } else {
                             errors.add("${download.fileName}: failed to create on device")
-                            continue
-                        }
-
-                        val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
-                        try {
-                            tempFile.writeBytes(download.data)
-
-                            val pfd = android.os.ParcelFileDescriptor.open(
-                                tempFile,
-                                android.os.ParcelFileDescriptor.MODE_READ_ONLY
-                            )
-
-                            val success = pfd.use {
-                                mtpDevice.sendObject(
-                                    sentInfo.objectHandle,
-                                    download.data.size.toLong(),
-                                    it
-                                )
-                            }
-
-                            if (success) {
-                                sentCount++
-                            } else {
-                                errors.add("${download.fileName}: send failed")
-                            }
-                        } finally {
-                            tempFile.delete()
                         }
                     }
 
@@ -963,6 +897,78 @@ class MainActivity : ComponentActivity() {
                 it.second.equals(folderName, ignoreCase = true)
             }
             ?.first
+    }
+
+    /**
+     * Try to create and send a file to the Garmin via MTP.
+     * Attempts multiple format/size combinations since Garmin MTP
+     * implementations vary in what they accept.
+     * Returns the MtpObjectInfo on success, null on failure.
+     */
+    private fun sendFileToMtp(
+        mtpDevice: MtpDevice,
+        storageId: Int,
+        parentHandle: Int,
+        fileName: String,
+        data: ByteArray
+    ): MtpObjectInfo? {
+        // Try different combinations — Garmin MTP can be picky
+        val attempts = listOf(
+            // Attempt 1: no size, FORMAT_UNDEFINED
+            Triple(0L, android.mtp.MtpConstants.FORMAT_UNDEFINED, "no-size/undefined"),
+            // Attempt 2: with size, FORMAT_UNDEFINED
+            Triple(data.size.toLong(), android.mtp.MtpConstants.FORMAT_UNDEFINED, "sized/undefined"),
+            // Attempt 3: no size, FORMAT_TEXT
+            Triple(0L, android.mtp.MtpConstants.FORMAT_TEXT, "no-size/text"),
+            // Attempt 4: with size, FORMAT_TEXT
+            Triple(data.size.toLong(), android.mtp.MtpConstants.FORMAT_TEXT, "sized/text"),
+        )
+
+        for ((compressedSize, format, label) in attempts) {
+            val builder = MtpObjectInfo.Builder()
+                .setStorageId(storageId)
+                .setParent(parentHandle)
+                .setName(fileName)
+                .setFormat(format)
+
+            if (compressedSize > 0) {
+                builder.setCompressedSize(compressedSize)
+            }
+
+            val objectInfo = builder.build()
+            val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+
+            if (sentInfo != null) {
+                // sendObjectInfo succeeded — now send the data
+                val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
+                try {
+                    tempFile.writeBytes(data)
+
+                    val pfd = android.os.ParcelFileDescriptor.open(
+                        tempFile,
+                        android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                    )
+
+                    val success = pfd.use {
+                        mtpDevice.sendObject(
+                            sentInfo.objectHandle,
+                            data.size.toLong(),
+                            it
+                        )
+                    }
+
+                    if (success) {
+                        return sentInfo
+                    }
+                } finally {
+                    tempFile.delete()
+                }
+            }
+
+            Thread.sleep(100)
+        }
+
+        return null
     }
 
     private fun findCoursesFolderHandle(

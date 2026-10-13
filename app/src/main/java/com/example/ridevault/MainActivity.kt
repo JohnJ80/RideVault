@@ -372,22 +372,26 @@ class MainActivity : ComponentActivity() {
                     }
 
                     val storageId = storageIds[0]
-                    val coursesHandle = findCoursesFolderHandle(mtpDevice, storageId)
-                    if (coursesHandle == null) {
+                    val (folderName, targetHandle) = findNewFilesFolderHandle(mtpDevice, storageId)
+                    if (targetHandle == null) {
                         runOnUiThread {
-                            rwgpsSendStatus = "Courses folder not found on Garmin"
+                            rwgpsSendStatus = folderName // error message
                             rwgpsSendBusy = false
                         }
                         return@thread
                     }
 
+                    runOnUiThread {
+                        rwgpsSendStatus = "Sending ${download.fileName} to Garmin/$folderName..."
+                    }
+
                     // Build MTP object info for the new file
                     val objectInfo = MtpObjectInfo.Builder()
                         .setStorageId(storageId)
-                        .setParent(coursesHandle)
+                        .setParent(targetHandle)
                         .setName(download.fileName)
                         .setCompressedSize(download.data.size.toLong())
-                        .setFormat(android.mtp.MtpConstants.FORMAT_TEXT)
+                        .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
                         .build()
 
                     // Retry sendObjectInfo — Garmin MTP can be slow
@@ -531,10 +535,10 @@ class MainActivity : ComponentActivity() {
                     }
 
                     val storageId = storageIds[0]
-                    val coursesHandle = findCoursesFolderHandle(mtpDevice, storageId)
-                    if (coursesHandle == null) {
+                    val (folderName, targetHandle) = findNewFilesFolderHandle(mtpDevice, storageId)
+                    if (targetHandle == null) {
                         runOnUiThread {
-                            rwgpsSendStatus = "Courses folder not found on Garmin"
+                            rwgpsSendStatus = folderName // error message
                             rwgpsSendBusy = false
                         }
                         return@thread
@@ -544,15 +548,15 @@ class MainActivity : ComponentActivity() {
                     for ((index, download) in downloads.withIndex()) {
                         runOnUiThread {
                             rwgpsSendStatus =
-                                "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
+                                "Sending ${index + 1} of ${downloads.size} to $folderName: ${download.fileName}..."
                         }
 
                         val objectInfo = MtpObjectInfo.Builder()
                             .setStorageId(storageId)
-                            .setParent(coursesHandle)
+                            .setParent(targetHandle)
                             .setName(download.fileName)
                             .setCompressedSize(download.data.size.toLong())
-                            .setFormat(android.mtp.MtpConstants.FORMAT_TEXT)
+                            .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
                             .build()
 
                         var sentInfo = mtpDevice.sendObjectInfo(objectInfo)
@@ -976,6 +980,45 @@ class MainActivity : ComponentActivity() {
             garminHandle = garminHandle,
             folderName = "Courses"
         )
+    }
+
+    /**
+     * Find the NewFiles folder on the Garmin for importing GPX courses.
+     * The Garmin processes files placed here on next reboot.
+     * Falls back to Courses folder if NewFiles not found.
+     */
+    private fun findNewFilesFolderHandle(
+        mtpDevice: MtpDevice,
+        storageId: Int
+    ): Pair<String, Int?> {
+        val garminHandle = findGarminFolderHandle(
+            mtpDevice = mtpDevice,
+            storageId = storageId
+        ) ?: return "Garmin folder not found" to null
+
+        // Try NewFiles first (standard Garmin import folder)
+        val newFilesHandle = findGarminChildFolderHandle(
+            mtpDevice = mtpDevice,
+            storageId = storageId,
+            garminHandle = garminHandle,
+            folderName = "NewFiles"
+        )
+        if (newFilesHandle != null) {
+            return "NewFiles" to newFilesHandle
+        }
+
+        // Fall back to Courses
+        val coursesHandle = findGarminChildFolderHandle(
+            mtpDevice = mtpDevice,
+            storageId = storageId,
+            garminHandle = garminHandle,
+            folderName = "Courses"
+        )
+        if (coursesHandle != null) {
+            return "Courses" to coursesHandle
+        }
+
+        return "Neither NewFiles nor Courses folder found" to null
     }
 
     private fun enumerateCourseFilesOnDevice(

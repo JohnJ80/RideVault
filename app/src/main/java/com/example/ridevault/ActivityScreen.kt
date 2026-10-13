@@ -707,7 +707,11 @@ fun RideVaultHome(
                                         )
 
                                         Text(
-                                            text = "${collection.routeCount} routes",
+                                            text = if (collection.routeCount > 0) {
+                                                "${collection.routeCount} routes"
+                                            } else {
+                                                "Tap to view →"
+                                            },
                                             style =
                                                 MaterialTheme
                                                     .typography

@@ -600,4 +600,810 @@ class MainActivity : ComponentActivity() {
             }
             .sortedBy { it.name }
     }
+
+    private fun deleteMtpObjectWithRetry(
+        mtpDevice: MtpDevice,
+        handle: Int
+    ): Boolean {
+        repeat(4) { attempt ->
+            if (mtpDevice.deleteObject(handle)) {
+                return true
+            }
+
+            if (attempt < 3) {
+                Thread.sleep(100)
+            }
+        }
+
+        return false
+    }
+
+    private fun deleteActivitiesWorker(
+        files: List<FitFileInfo>
+    ): Pair<String, Int> {
+        val device = connectedDevice
+            ?: return "No Garmin device connected" to 0
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required" to 0
+        }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection" to 0
+
+        val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
+
+        try {
+            if (!mtpDevice.open(connection)) {
+                return "Could not open MTP session" to 0
+            }
+
+            mtpOpened = true
+
+            var deletedCount = 0
+
+            for ((index, file) in files.withIndex()) {
+                runOnUiThread {
+                    deleteStatus =
+                        "Deleting ${index + 1} of ${files.size}: " +
+                                file.name
+                }
+
+                if (!mtpDevice.deleteObject(file.handle)) {
+                    return (
+                        "Delete failed at ${index + 1} of " +
+                                "${files.size}: ${file.name}"
+                    ) to deletedCount
+                }
+
+                deletedCount++
+            }
+
+            return (
+                "Deleted $deletedCount activities"
+            ) to deletedCount
+
+        } catch (e: Exception) {
+            return (
+                "Delete exception: ${e.javaClass.simpleName}"
+            ) to 0
+        } finally {
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
+        }
+    }
+
+    private fun openActivitiesDownloadFolder() {
+        val folderUri = DocumentsContract.buildDocumentUri(
+            "com.android.externalstorage.documents",
+            "primary:Download/RideVault/Activities"
+        )
+
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(
+                folderUri,
+                DocumentsContract.Document.MIME_TYPE_DIR
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+
+        try {
+            startActivity(viewIntent)
+        } catch (_: Exception) {
+            val fallbackIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(
+                    DocumentsContract.EXTRA_INITIAL_URI,
+                    folderUri
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+
+            startActivity(fallbackIntent)
+        }
+    }
+
+    private fun openCoursesBackupFolder() {
+        val folderUri = DocumentsContract.buildDocumentUri(
+            "com.android.externalstorage.documents",
+            "primary:Download/RideVault/Courses"
+        )
+
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(
+                folderUri,
+                DocumentsContract.Document.MIME_TYPE_DIR
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+
+        try {
+            startActivity(viewIntent)
+        } catch (_: Exception) {
+            val fallbackIntent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(
+                    DocumentsContract.EXTRA_INITIAL_URI,
+                    folderUri
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+
+            startActivity(fallbackIntent)
+        }
+    }
+
+    private data class TransferFile(
+        val handle: Int,
+        val name: String,
+        val sizeBytes: Long
+    )
+
+    private data class TransferResult(
+        val verifiedCount: Int
+    )
+
+    private fun downloadActivitiesWorker(
+        files: List<FitFileInfo>
+    ): Pair<String, DownloadSummary?> {
+        val transferFiles = files.map { file ->
+            TransferFile(
+                handle = file.handle,
+                name = file.name,
+                sizeBytes = file.sizeBytes
+            )
+        }
+
+        val result = copyMtpFilesToDownloads(
+            files = transferFiles,
+            currentPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities/",
+            previousPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Activities-Previous/",
+            preparingErrorPrefix =
+                "Could not prepare download folders",
+            progressVerb = "Downloading",
+            createErrorPrefix =
+                "Could not create destination file",
+            transferFailurePrefix = "Download failed",
+            exceptionPrefix = "Download exception",
+            successNoun = "activities",
+            onProgress = { message ->
+                downloadStatus = message
+            }
+        )
+
+        val transferResult = result.second
+            ?: return result.first to null
+
+        return result.first to DownloadSummary(
+            files = files,
+            verifiedCount = transferResult.verifiedCount
+        )
+    }
+
+    private fun backupCoursesWorker(
+        files: List<CourseFileInfo>
+    ): Pair<String, CourseBackupSummary?> {
+        val transferFiles = files.map { file ->
+            TransferFile(
+                handle = file.handle,
+                name = normalizeCourseFitFilename(file.name),
+                sizeBytes = file.sizeBytes
+            )
+        }
+
+        val result = copyMtpFilesToDownloads(
+            files = transferFiles,
+            currentPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Courses/",
+            previousPath =
+                "${Environment.DIRECTORY_DOWNLOADS}/RideVault/Courses-Previous/",
+            preparingErrorPrefix =
+                "Could not prepare backup folders",
+            progressVerb = "Backing up",
+            createErrorPrefix =
+                "Could not create destination file",
+            transferFailurePrefix = "Backup failed",
+            exceptionPrefix = "Backup exception",
+            successNoun = "courses",
+            onProgress = { message ->
+                courseBackupStatus = message
+            }
+        )
+
+        val transferResult = result.second
+            ?: return result.first to null
+
+        return result.first to CourseBackupSummary(
+            files = files,
+            verifiedCount = transferResult.verifiedCount
+        )
+    }
+
+    private fun copyMtpFilesToDownloads(
+        files: List<TransferFile>,
+        currentPath: String,
+        previousPath: String,
+        preparingErrorPrefix: String,
+        progressVerb: String,
+        createErrorPrefix: String,
+        transferFailurePrefix: String,
+        exceptionPrefix: String,
+        successNoun: String,
+        onProgress: (String) -> Unit
+    ): Pair<String, TransferResult?> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return "Downloads require Android 10 or newer" to null
+        }
+
+        val device = connectedDevice
+            ?: return "No Garmin device connected" to null
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required" to null
+        }
+
+        val collection =
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val normalizedCurrentPath =
+            normalizeDownloadRelativePath(currentPath)
+        val normalizedPreviousPath =
+            normalizeDownloadRelativePath(previousPath)
+
+        try {
+            rotateDownloadSet(
+                collection = collection,
+                currentPath = normalizedCurrentPath,
+                previousPath = normalizedPreviousPath
+            )
+        } catch (e: Exception) {
+            return (
+                "$preparingErrorPrefix: " +
+                        e.javaClass.simpleName
+            ) to null
+        }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection" to null
+
+        val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
+
+        try {
+            if (!mtpDevice.open(connection)) {
+                return "Could not open MTP session" to null
+            }
+
+            mtpOpened = true
+
+            var verifiedCount = 0
+
+            for ((index, file) in files.withIndex()) {
+                runOnUiThread {
+                    onProgress(
+                        "$progressVerb ${index + 1} of ${files.size}: " +
+                                file.name
+                    )
+                }
+
+                val values = ContentValues().apply {
+                    put(
+                        MediaStore.Downloads.DISPLAY_NAME,
+                        file.name
+                    )
+                    put(
+                        MediaStore.Downloads.MIME_TYPE,
+                        "application/octet-stream"
+                    )
+                    put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        normalizedCurrentPath
+                    )
+                    put(
+                        MediaStore.Downloads.IS_PENDING,
+                        1
+                    )
+                }
+
+                val outputUri = contentResolver.insert(
+                    collection,
+                    values
+                ) ?: return (
+                    "$createErrorPrefix: ${file.name}"
+                ) to null
+
+                val imported = try {
+                    contentResolver
+                        .openFileDescriptor(outputUri, "w")
+                        ?.use { descriptor ->
+                            mtpDevice.importFile(
+                                file.handle,
+                                descriptor
+                            )
+                        } ?: false
+                } catch (_: Exception) {
+                    false
+                }
+
+                if (!imported) {
+                    contentResolver.delete(
+                        outputUri,
+                        null,
+                        null
+                    )
+
+                    return (
+                        "$transferFailurePrefix at ${index + 1} of " +
+                                "${files.size}: ${file.name}"
+                    ) to null
+                }
+
+                contentResolver.update(
+                    outputUri,
+                    ContentValues().apply {
+                        put(
+                            MediaStore.Downloads.IS_PENDING,
+                            0
+                        )
+                    },
+                    null,
+                    null
+                )
+
+                val savedSize = contentResolver
+                    .openFileDescriptor(outputUri, "r")
+                    ?.use { descriptor ->
+                        descriptor.statSize
+                    }
+                    ?: -1L
+
+                if (
+                    savedSize >= 0L &&
+                    savedSize != file.sizeBytes
+                ) {
+                    return (
+                        "Size mismatch for ${file.name}: expected " +
+                                "${formatFileSize(file.sizeBytes)}, got " +
+                                formatFileSize(savedSize)
+                    ) to null
+                }
+
+                verifiedCount++
+            }
+
+            return (
+                "Downloaded and verified $verifiedCount of " +
+                        "${files.size} $successNoun"
+            ) to TransferResult(
+                verifiedCount = verifiedCount
+            )
+        } catch (e: Exception) {
+            return (
+                "$exceptionPrefix: ${e.javaClass.simpleName}"
+            ) to null
+        } finally {
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
+        }
+    }
+
+    private fun queryDownloadIdsAtRelativePath(
+        collection: android.net.Uri,
+        relativePath: String
+    ): Set<Long> {
+        val projection = arrayOf(MediaStore.Downloads._ID)
+        val ids = linkedSetOf<Long>()
+
+        for (queryPath in downloadRelativePathQueryValues(relativePath)) {
+            contentResolver.query(
+                collection,
+                projection,
+                "${MediaStore.Downloads.RELATIVE_PATH} = ?",
+                arrayOf(queryPath),
+                null
+            )?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(
+                    MediaStore.Downloads._ID
+                )
+
+                while (cursor.moveToNext()) {
+                    ids.add(cursor.getLong(idColumn))
+                }
+            }
+        }
+
+        return ids
+    }
+
+    private fun rotateDownloadSet(
+        collection: android.net.Uri,
+        currentPath: String,
+        previousPath: String
+    ) {
+        val normalizedCurrentPath =
+            normalizeDownloadRelativePath(currentPath)
+        val normalizedPreviousPath =
+            normalizeDownloadRelativePath(previousPath)
+
+        for (itemId in queryDownloadIdsAtRelativePath(
+            collection,
+            normalizedPreviousPath
+        )) {
+            val itemUri =
+                android.content.ContentUris.withAppendedId(
+                    collection,
+                    itemId
+                )
+
+            contentResolver.delete(itemUri, null, null)
+        }
+
+        for (itemId in queryDownloadIdsAtRelativePath(
+            collection,
+            normalizedCurrentPath
+        )) {
+            val itemUri =
+                android.content.ContentUris.withAppendedId(
+                    collection,
+                    itemId
+                )
+
+            val moveValues = ContentValues().apply {
+                put(
+                    MediaStore.Downloads.RELATIVE_PATH,
+                    normalizedPreviousPath
+                )
+            }
+
+            contentResolver.update(
+                itemUri,
+                moveValues,
+                null,
+                null
+            )
+        }
+    }
+
+    private fun openMtpSessionWorker(): String {
+        val device = connectedDevice ?: return "No Garmin device connected"
+
+        if (!usbManager.hasPermission(device)) {
+            return "USB permission required"
+        }
+
+        runOnUiThread { mtpStatus = "Opening USB connection..." }
+
+        val connection = usbManager.openDevice(device)
+            ?: return "Could not open USB connection"
+
+        val mtpDevice = MtpDevice(device)
+        var mtpOpened = false
+
+        try {
+            runOnUiThread { mtpStatus = "Opening MTP session..." }
+
+            val opened = mtpDevice.open(connection)
+
+            if (!opened) {
+                return "Could not open MTP session"
+            }
+
+            mtpOpened = true
+
+            runOnUiThread { mtpStatus = "Reading DeviceInfo..." }
+
+            var info = mtpDevice.deviceInfo
+            var retryCount = 0
+
+            while (info == null && retryCount < 4) {
+                Thread.sleep(250)
+                retryCount++
+                runOnUiThread {
+                    mtpStatus = "Reading DeviceInfo... retry $retryCount"
+                }
+                info = mtpDevice.deviceInfo
+            }
+
+            if (info == null) {
+                return "MTP opened, but no DeviceInfo after retries"
+            }
+
+            runOnUiThread { mtpStatus = "Reading storage IDs..." }
+
+            var storageIds = mtpDevice.storageIds ?: intArrayOf()
+            var storageRetryCount = 0
+
+            while (storageIds.isEmpty() && storageRetryCount < 4) {
+                Thread.sleep(250)
+                storageRetryCount++
+                runOnUiThread {
+                    mtpStatus = "Reading storage IDs... retry $storageRetryCount"
+                }
+                storageIds = mtpDevice.storageIds ?: intArrayOf()
+            }
+
+            if (storageIds.isEmpty()) {
+                return "MTP: ${info.manufacturer} ${info.model}; storages=0 after retries"
+            }
+
+            val storageId = storageIds[0]
+
+            runOnUiThread { mtpStatus = "Reading StorageInfo..." }
+
+            val storageInfo = mtpDevice.getStorageInfo(storageId)
+
+            runOnUiThread {
+                mtpStatus = "Reading root object handles..."
+            }
+
+            val rootHandles =
+                mtpDevice.getObjectHandles(storageId, 0, -1) ?: intArrayOf()
+
+            val rootObjects = mutableListOf<Pair<Int, String>>()
+
+            for (handle in rootHandles) {
+                val objectInfo = mtpDevice.getObjectInfo(handle)
+                if (objectInfo != null) {
+                    rootObjects.add(handle to objectInfo.name)
+                }
+            }
+
+            val rootSummary = rootObjects
+                .take(5)
+                .mapIndexed { index, item ->
+                    "${index + 1}: ${item.second}"
+                }
+                .joinToString("; ")
+
+            val garminHandle = rootObjects
+                .firstOrNull { it.second.equals("Garmin", ignoreCase = true) }
+                ?.first
+
+            if (garminHandle == null) {
+                return "MTP: ${info.manufacturer} ${info.model}; " +
+                        "storage=${storageInfo?.description ?: "unknown"}; " +
+                        "root=${rootHandles.size}; " +
+                        rootSummary + "; Garmin folder not found"
+            }
+
+            runOnUiThread {
+                mtpStatus = "Reading Garmin folder..."
+            }
+
+            val garminHandles =
+                mtpDevice.getObjectHandles(storageId, 0, garminHandle) ?: intArrayOf()
+
+            val garminObjects = mutableListOf<Pair<Int, String>>()
+
+            for (handle in garminHandles) {
+                val objectInfo = mtpDevice.getObjectInfo(handle)
+                if (objectInfo != null) {
+                    garminObjects.add(handle to objectInfo.name)
+                }
+            }
+
+            val garminSummary = garminObjects
+                .take(12)
+                .joinToString("; ") { it.second }
+
+            val activitiesHandle = garminObjects
+                .firstOrNull {
+                    it.second.equals(
+                        "Activities",
+                        ignoreCase = true
+                    )
+                }
+                ?.first
+
+            val coursesHandle = garminObjects
+                .firstOrNull {
+                    it.second.equals(
+                        "Courses",
+                        ignoreCase = true
+                    )
+                }
+                ?.first
+
+            if (activitiesHandle == null) {
+                return "MTP: ${info.manufacturer} ${info.model}; " +
+                        "storage=${storageInfo?.description ?: "unknown"}; " +
+                        "root=${rootHandles.size}; " +
+                        rootSummary + "; " +
+                        "Garmin children=${garminHandles.size}; " +
+                        garminSummary + "; Activities folder not found"
+            }
+
+            runOnUiThread {
+                mtpStatus = "Reading Activities folder..."
+            }
+
+            val activityHandleSet = linkedSetOf<Int>()
+
+            repeat(4) { attempt ->
+                val handles =
+                    mtpDevice.getObjectHandles(
+                        storageId,
+                        0,
+                        activitiesHandle
+                    ) ?: intArrayOf()
+
+                activityHandleSet.addAll(handles.toList())
+
+                runOnUiThread {
+                    mtpStatus =
+                        "Reading activity index... " +
+                                "pass ${attempt + 1} of 4; " +
+                                "${activityHandleSet.size} found"
+                }
+
+                if (attempt < 3) {
+                    Thread.sleep(250)
+                }
+            }
+
+            val activityHandles = activityHandleSet.toIntArray()
+            val fitFiles = mutableListOf<FitFileInfo>()
+            var unreadableCount = 0
+
+            runOnUiThread {
+                activityScanCurrent = 0
+                activityScanTotal = activityHandles.size
+            }
+
+            for ((index, handle) in activityHandles.withIndex()) {
+                var objectInfo = mtpDevice.getObjectInfo(handle)
+                var objectRetryCount = 0
+
+                while (objectInfo == null && objectRetryCount < 4) {
+                    Thread.sleep(100)
+                    objectRetryCount++
+                    objectInfo = mtpDevice.getObjectInfo(handle)
+                }
+
+                if (objectInfo == null) {
+                    unreadableCount++
+                } else if (
+                    objectInfo.name.endsWith(".fit", ignoreCase = true)
+                ) {
+                    fitFiles.add(
+                        FitFileInfo(
+                            handle = handle,
+                            name = objectInfo.name,
+                            sizeBytes =
+                                objectInfo.compressedSize.toLong(),
+                            modifiedEpochSeconds =
+                                objectInfo.dateModified
+                        )
+                    )
+                }
+
+                runOnUiThread {
+                    activityScanCurrent = index + 1
+                    mtpStatus =
+                        "Reading activity ${index + 1} " +
+                                "of ${activityHandles.size}..."
+                }
+            }
+
+            fitFiles.sortByDescending { it.name }
+
+            runOnUiThread {
+                this.fitFiles = fitFiles.toList()
+            }
+
+            val courseFiles =
+                mutableListOf<CourseFileInfo>()
+
+            var unreadableCourseCount = 0
+
+            if (coursesHandle != null) {
+                runOnUiThread {
+                    mtpStatus = "Reading Courses folder..."
+                }
+
+                val courseHandleSet =
+                    linkedSetOf<Int>()
+
+                repeat(3) { attempt ->
+                    val handles =
+                        mtpDevice.getObjectHandles(
+                            storageId,
+                            0,
+                            coursesHandle
+                        ) ?: intArrayOf()
+
+                    courseHandleSet.addAll(
+                        handles.toList()
+                    )
+
+                    runOnUiThread {
+                        mtpStatus =
+                            "Reading course index... " +
+                                    "pass ${attempt + 1} of 3; " +
+                                    "${courseHandleSet.size} found"
+                    }
+
+                    if (attempt < 2) {
+                        Thread.sleep(200)
+                    }
+                }
+
+                for (handle in courseHandleSet) {
+                    var objectInfo =
+                        mtpDevice.getObjectInfo(handle)
+
+                    var retryCount2 = 0
+
+                    while (
+                        objectInfo == null &&
+                        retryCount2 < 4
+                    ) {
+                        Thread.sleep(100)
+                        retryCount2++
+                        objectInfo =
+                            mtpDevice.getObjectInfo(handle)
+                    }
+
+                    if (objectInfo == null) {
+                        unreadableCourseCount++
+                    } else if (
+                        objectInfo.name.endsWith(
+                            ".fit",
+                            ignoreCase = true
+                        )
+                    ) {
+                        courseFiles.add(
+                            CourseFileInfo(
+                                handle = handle,
+                                name = objectInfo.name,
+                                sizeBytes =
+                                    objectInfo.compressedSize
+                                        .toLong(),
+                                modifiedEpochSeconds =
+                                    objectInfo.dateModified
+                            )
+                        )
+                    }
+                }
+            }
+
+            courseFiles.sortBy {
+                it.name.lowercase()
+            }
+
+            runOnUiThread {
+                this.courseFiles =
+                    courseFiles.toList()
+            }
+
+            val unreadableTotal =
+                unreadableCount +
+                        unreadableCourseCount
+
+            return if (unreadableTotal == 0) {
+                "Loaded ${fitFiles.size} activities " +
+                        "and ${courseFiles.size} courses"
+            } else {
+                "Loaded ${fitFiles.size} activities " +
+                        "and ${courseFiles.size} courses; " +
+                        "$unreadableTotal objects could not be read"
+            }
+
+        } catch (e: Exception) {
+            return "MTP exception: ${e.javaClass.simpleName}"
+        } finally {
+            closeMtpSession(
+                mtpDevice = mtpDevice,
+                mtpOpened = mtpOpened
+            )
+        }
+    }
 }

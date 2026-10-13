@@ -20,6 +20,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import com.example.ridevault.ui.theme.RideVaultTheme
+import com.example.ridevault.rwgps.RwgpsAuth
 import com.example.ridevault.rwgps.handleRwgpsRedirect
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch

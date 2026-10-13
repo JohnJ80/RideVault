@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
     private var courseDeleteStatus by mutableStateOf("")
     private var courseDeleteCompleteCount by mutableIntStateOf(0)
 
+    private var rwgpsLoggedIn by mutableStateOf(false)
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -107,6 +108,8 @@ class MainActivity : ComponentActivity() {
         }
 
         refreshUsbState()
+
+        rwgpsLoggedIn = RwgpsAuth.isLoggedIn(this)
 
         handleOauthRedirect(intent)
 
@@ -186,6 +189,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onDismissCourseDeleteComplete = {
                         courseDeleteCompleteCount = 0
+                    },
+                    rwgpsLoggedIn = rwgpsLoggedIn,
+                    onRwgpsLogout = {
+                        RwgpsAuth.clearToken(this@MainActivity)
+                        rwgpsLoggedIn = false
                     }
                 )
             }
@@ -201,7 +209,7 @@ class MainActivity : ComponentActivity() {
     private fun handleOauthRedirect(intent: Intent?) {
         lifecycleScope.launch {
             if (handleRwgpsRedirect(this@MainActivity, intent)) {
-                // Token saved; UI will refresh on next composition via isLoggedIn check
+                rwgpsLoggedIn = true
             }
         }
     }

@@ -49,7 +49,9 @@ fun RideVaultHome(
     onOpenCoursesBackupFolder: () -> Unit,
     onDeleteCourse: (CourseFileInfo) -> Unit,
     onDeleteAllCourses: () -> Unit,
-    onDismissCourseDeleteComplete: () -> Unit
+    onDismissCourseDeleteComplete: () -> Unit,
+    rwgpsLoggedIn: Boolean = false,
+    onRwgpsLogout: () -> Unit = {}
 ) {
     var selectedFile by remember {
         mutableStateOf<FitFileInfo?>(null)
@@ -117,7 +119,10 @@ fun RideVaultHome(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                RwgpsLoginSection()
+                RwgpsLoginSection(
+                    loggedIn = rwgpsLoggedIn,
+                    onLogout = onRwgpsLogout
+                )
 
                 Spacer(modifier = Modifier.height(20.dp))
 

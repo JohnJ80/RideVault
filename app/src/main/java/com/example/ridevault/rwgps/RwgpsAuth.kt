@@ -45,30 +45,34 @@ object RwgpsAuth {
 
     suspend fun exchangeCodeForToken(context: Context, code: String): Boolean =
         withContext(Dispatchers.IO) {
-            val body = FormBody.Builder()
-                .add("grant_type", "authorization_code")
-                .add("code", code)
-                .add("client_id", CLIENT_ID)
-                .add("client_secret", CLIENT_SECRET)
-                .add("redirect_uri", REDIRECT_URI)
-                .build()
+            try {
+                val body = FormBody.Builder()
+                    .add("grant_type", "authorization_code")
+                    .add("code", code)
+                    .add("client_id", CLIENT_ID)
+                    .add("client_secret", CLIENT_SECRET)
+                    .add("redirect_uri", REDIRECT_URI)
+                    .build()
 
-            val request = Request.Builder()
-                .url(TOKEN_URL)
-                .post(body)
-                .build()
+                val request = Request.Builder()
+                    .url(TOKEN_URL)
+                    .post(body)
+                    .build()
 
-            http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext false
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext false
 
-                val json = JSONObject(response.body?.string() ?: return@withContext false)
-                val token = json.optString("access_token")
-                val userId = json.optInt("user_id", -1)
+                    val json = JSONObject(response.body?.string() ?: return@withContext false)
+                    val token = json.optString("access_token")
+                    val userId = json.optInt("user_id", -1)
 
-                if (token.isBlank()) return@withContext false
+                    if (token.isBlank()) return@withContext false
 
-                saveToken(context, token, userId)
-                true
+                    saveToken(context, token, userId)
+                    true
+                }
+            } catch (_: Exception) {
+                false
             }
         }
 

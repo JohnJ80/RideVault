@@ -71,5 +71,9 @@ suspend fun handleRwgpsRedirect(context: Context, intent: Intent?): Boolean {
     if (data.scheme != "ridevault" || data.host != "oauth") return false
 
     val code = data.getQueryParameter("code") ?: return false
-    return RwgpsAuth.exchangeCodeForToken(context, code)
+    return try {
+        RwgpsAuth.exchangeCodeForToken(context, code)
+    } catch (_: Exception) {
+        false
+    }
 }

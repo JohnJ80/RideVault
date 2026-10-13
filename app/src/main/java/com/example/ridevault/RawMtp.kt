@@ -281,6 +281,17 @@ class RawMtpSession(
     // ── MTP Operations ─────────────────────────────────────
 
     private fun openSession(): String? {
+        // Close any stale session left by Android's MtpDevice
+        try {
+            sendCommand(OP_CLOSE_SESSION)
+            readContainer()
+            transactionId++
+        } catch (_: Exception) {
+        }
+
+        // Reset transaction ID after clearing stale session
+        transactionId = 1
+
         val result = executeSimple(OP_OPEN_SESSION, 1)
         return when (result.code) {
             RESP_OK, RESP_SESSION_ALREADY_OPEN -> null

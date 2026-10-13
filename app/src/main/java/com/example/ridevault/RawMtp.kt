@@ -134,10 +134,14 @@ class RawMtpSession(
 
     // ── Low-level USB I/O ──────────────────────────────────
 
+    /** Last bulk transfer diagnostics for error reporting */
+    private var lastSendResult = 0
+    private var lastSendSize = 0
+
     private fun sendCommand(
         opCode: Int,
         vararg params: Int
-    ) {
+    ): Int {
         val length = 12 + params.size * 4
         val buf = ByteBuffer.allocate(length).order(ByteOrder.LITTLE_ENDIAN)
         buf.putInt(length)
@@ -147,10 +151,12 @@ class RawMtpSession(
         for (p in params) {
             buf.putInt(p)
         }
-        connection.bulkTransfer(bulkOut, buf.array(), length, timeout)
+        lastSendSize = length
+        lastSendResult = connection.bulkTransfer(bulkOut, buf.array(), length, timeout)
+        return lastSendResult
     }
 
-    private fun sendDataPhase(opCode: Int, data: ByteArray) {
+    private fun sendDataPhase(opCode: Int, data: ByteArray): Int {
         val length = 12 + data.size
         val buf = ByteBuffer.allocate(length).order(ByteOrder.LITTLE_ENDIAN)
         buf.putInt(length)
@@ -158,7 +164,9 @@ class RawMtpSession(
         buf.putShort(opCode.toShort())
         buf.putInt(transactionId)
         buf.put(data)
-        connection.bulkTransfer(bulkOut, buf.array(), length, timeout)
+        lastSendSize = length
+        lastSendResult = connection.bulkTransfer(bulkOut, buf.array(), length, timeout)
+        return lastSendResult
     }
 
     /**
@@ -380,21 +388,25 @@ class RawMtpSession(
     ): Pair<Boolean, String> {
         // Build the ObjectInfo dataset
         val objectInfo = buildObjectInfoDataset(
-            storageId = storageId,
-            parentHandle = parentHandle,
             fileName = fileName,
             fileSize = fileData.size
         )
 
         // SendObjectInfo: command with storageId + parentHandle, then data
-        sendCommand(OP_SEND_OBJECT_INFO, storageId, parentHandle)
-        sendDataPhase(OP_SEND_OBJECT_INFO, objectInfo)
+        val cmdResult = sendCommand(OP_SEND_OBJECT_INFO, storageId, parentHandle)
+        if (cmdResult < 0) {
+            return false to "SendObjectInfo cmd send failed: sent=$cmdResult size=$lastSendSize"
+        }
+        val dataResult = sendDataPhase(OP_SEND_OBJECT_INFO, objectInfo)
+        if (dataResult < 0) {
+            return false to "SendObjectInfo data send failed: sent=$dataResult size=$lastSendSize"
+        }
         val infoResponse = readContainer()
         transactionId++
 
         if (infoResponse.code != RESP_OK) {
             val detail = if (infoResponse.type == -1) {
-                "no response (timeout or read error)"
+                "no response (cmd=$cmdResult data=$dataResult dataSize=$lastSendSize)"
             } else {
                 "type=${infoResponse.type} code=0x${infoResponse.code.toString(16)}"
             }
@@ -425,8 +437,6 @@ class RawMtpSession(
     // ── Helpers ─────────────────────────────────────────────
 
     private fun buildObjectInfoDataset(
-        storageId: Int,
-        parentHandle: Int,
         fileName: String,
         fileSize: Int
     ): ByteArray {
@@ -437,7 +447,7 @@ class RawMtpSession(
         val size = 52 + nameBytes.size + emptyString.size * 3
         val buf = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
 
-        buf.putInt(storageId)            // StorageID
+        buf.putInt(0)                    // StorageID (0 = use command param)
         buf.putShort(0x3000.toShort())   // ObjectFormat: Undefined
         buf.putShort(0x0000.toShort())   // ProtectionStatus: No protection
         buf.putInt(fileSize)             // ObjectCompressedSize
@@ -448,7 +458,7 @@ class RawMtpSession(
         buf.putInt(0)                    // ImagePixWidth
         buf.putInt(0)                    // ImagePixHeight
         buf.putInt(0)                    // ImageBitDepth
-        buf.putInt(parentHandle)         // ParentObject
+        buf.putInt(0)                    // ParentObject (0 = use command param)
         buf.putShort(0x0000.toShort())   // AssociationType
         buf.putInt(0)                    // AssociationDesc
         buf.putInt(0)                    // SequenceNumber

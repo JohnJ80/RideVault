@@ -6,10 +6,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
-import android.provider.DocumentsContract
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.provider.DocumentsContract
+import android.mtp.MtpConstants
 import android.mtp.MtpDevice
 import android.mtp.MtpObjectInfo
 import android.os.Build
@@ -18,7 +18,6 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import com.example.ridevault.ui.theme.RideVaultTheme
 import com.example.ridevault.rwgps.RwgpsApi
@@ -68,33 +67,7 @@ class MainActivity : ComponentActivity() {
     private var rwgpsSendStatus by mutableStateOf("")
     private var rwgpsSendBusy by mutableStateOf(false)
     private var rwgpsSendCompleteCount by mutableIntStateOf(0)
-
-    // SAF folder picker for writing GPX files to Garmin
-    private var pendingSafAction: (() -> Unit)? = null
-
-    private val safFolderPicker = registerForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            // Persist permission so user doesn't have to pick again
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            getSharedPreferences("garmin_saf", MODE_PRIVATE)
-                .edit()
-                .putString("folder_uri", uri.toString())
-                .apply()
-            // Resume the pending send action
-            pendingSafAction?.invoke()
-            pendingSafAction = null
-        } else {
-            rwgpsSendStatus = "Folder selection cancelled"
-            rwgpsSendBusy = false
-            pendingSafAction = null
-        }
-    }
+    private var mtpWriteResult by mutableStateOf("")
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -355,7 +328,7 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                writeGpxFilesToGarmin(listOf(download))
+                saveGpxToDownloads(listOf(download))
             } catch (e: Exception) {
                 rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
                 rwgpsSendBusy = false
@@ -397,7 +370,7 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                writeGpxFilesToGarmin(downloads)
+                saveGpxToDownloads(downloads)
             } catch (e: Exception) {
                 rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
                 rwgpsSendBusy = false
@@ -405,120 +378,95 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ── SAF-based file writing to Garmin ────────────────────
+    // ── Save GPX files to Downloads ────────────────────────
 
     /**
-     * Write downloaded GPX files to the Garmin via Storage Access Framework.
-     * If no folder has been picked yet, launches the folder picker and
-     * resumes automatically after the user selects a folder.
+     * Save downloaded GPX files to Downloads/RideVault/RWGPS-Routes/.
+     * Uses MediaStore so no special permissions are needed.
      */
-    private fun writeGpxFilesToGarmin(downloads: List<RwgpsApi.RouteDownload>) {
-        val savedUri = getSavedGarminFolderUri()
-        if (savedUri != null && hasPersistedPermission(savedUri)) {
-            doWriteGpxFiles(savedUri, downloads)
-        } else {
-            // Need user to pick the Garmin folder
-            rwgpsSendStatus = "Pick the Garmin folder (e.g. NewFiles or Courses)..."
-            pendingSafAction = { writeGpxFilesToGarmin(downloads) }
-            safFolderPicker.launch(null)
-        }
-    }
-
-    private fun doWriteGpxFiles(treeUri: Uri, downloads: List<RwgpsApi.RouteDownload>) {
-        // Build the document ID for the tree root
-        val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
-        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
-
-        // Quick check that we can still query this folder
-        try {
-            contentResolver.query(parentUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.close()
-        } catch (_: Exception) {
-            // Permission lost — clear saved URI and re-prompt
-            getSharedPreferences("garmin_saf", MODE_PRIVATE)
-                .edit().remove("folder_uri").apply()
-            rwgpsSendStatus = "Folder access lost — pick the Garmin folder again..."
-            pendingSafAction = { writeGpxFilesToGarmin(downloads) }
-            safFolderPicker.launch(null)
+    private fun saveGpxToDownloads(downloads: List<RwgpsApi.RouteDownload>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            rwgpsSendStatus = "Requires Android 10 or newer"
+            rwgpsSendBusy = false
             return
         }
 
         rwgpsSendBusy = true
-        var sentCount = 0
+        var savedCount = 0
         val errors = mutableListOf<String>()
-
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+        val relativePath = normalizeDownloadRelativePath(
+            "${Environment.DIRECTORY_DOWNLOADS}/RideVault/RWGPS-Routes/"
+        )
 
         for ((index, download) in downloads.withIndex()) {
             rwgpsSendStatus =
-                "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
+                "Saving ${index + 1} of ${downloads.size}: ${download.fileName}..."
 
             try {
-                // Check if file already exists
-                var existingDocUri: Uri? = null
-                contentResolver.query(
-                    childrenUri,
-                    arrayOf(
-                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                        DocumentsContract.Document.COLUMN_DISPLAY_NAME
-                    ),
-                    null, null, null
-                )?.use { cursor ->
-                    val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                    val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    while (cursor.moveToNext()) {
-                        val name = cursor.getString(nameCol)
-                        if (name.equals(download.fileName, ignoreCase = true)) {
-                            val docId = cursor.getString(idCol)
-                            existingDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                            break
+                // Delete any existing file with the same name
+                val existingIds = mutableListOf<Long>()
+                for (queryPath in downloadRelativePathQueryValues(relativePath)) {
+                    contentResolver.query(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+                        "${MediaStore.Downloads.RELATIVE_PATH} = ? AND ${MediaStore.Downloads.DISPLAY_NAME} = ?",
+                        arrayOf(queryPath, download.fileName),
+                        null
+                    )?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+                        while (cursor.moveToNext()) {
+                            existingIds.add(cursor.getLong(idCol))
                         }
                     }
                 }
+                for (existingId in existingIds) {
+                    val existingUri = android.content.ContentUris.withAppendedId(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, existingId
+                    )
+                    contentResolver.delete(existingUri, null, null)
+                }
 
-                val fileUri = existingDocUri ?: DocumentsContract.createDocument(
-                    contentResolver,
-                    parentUri,
-                    "application/gpx+xml",
-                    download.fileName
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, download.fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/gpx+xml")
+                    put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+
+                val outputUri = contentResolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 )
 
-                if (fileUri == null) {
+                if (outputUri == null) {
                     errors.add("${download.fileName}: could not create file")
                     continue
                 }
 
-                contentResolver.openOutputStream(fileUri, "wt")?.use { out ->
+                contentResolver.openOutputStream(outputUri)?.use { out ->
                     out.write(download.data)
                     out.flush()
-                    sentCount++
-                } ?: run {
-                    errors.add("${download.fileName}: could not open for writing")
                 }
+
+                contentResolver.update(
+                    outputUri,
+                    ContentValues().apply {
+                        put(MediaStore.Downloads.IS_PENDING, 0)
+                    },
+                    null, null
+                )
+
+                savedCount++
             } catch (e: Exception) {
                 errors.add("${download.fileName}: ${e.message}")
             }
         }
 
-        val errorSuffix = if (errors.isNotEmpty()) {
-            " (${errors.size} failed)"
-        } else ""
-        rwgpsSendStatus = "Sent $sentCount of ${downloads.size} routes$errorSuffix"
-        if (sentCount > 0) {
-            rwgpsSendCompleteCount += sentCount
+        val errorSuffix = if (errors.isNotEmpty()) " (${errors.size} failed)" else ""
+        rwgpsSendStatus = "Saved $savedCount of ${downloads.size} routes$errorSuffix"
+        if (savedCount > 0) {
+            rwgpsSendCompleteCount += savedCount
         }
         rwgpsSendBusy = false
-    }
-
-    private fun getSavedGarminFolderUri(): Uri? {
-        val uriStr = getSharedPreferences("garmin_saf", MODE_PRIVATE)
-            .getString("folder_uri", null) ?: return null
-        return Uri.parse(uriStr)
-    }
-
-    private fun hasPersistedPermission(uri: Uri): Boolean {
-        return contentResolver.persistedUriPermissions.any {
-            it.uri == uri && it.isWritePermission
-        }
     }
 
     override fun onResume() {
@@ -1705,7 +1653,123 @@ class MainActivity : ComponentActivity() {
                 unreadableCount +
                         unreadableCourseCount
 
-            return if (unreadableTotal == 0) {
+            // ── MTP Write Test ──────────────────────────
+            // Try to write a small test file to NewFiles folder
+            // to diagnose MTP write support on this device
+            runOnUiThread {
+                mtpStatus = "Testing MTP write capability..."
+            }
+
+            val newFilesHandle = findGarminChildFolderHandle(
+                mtpDevice = mtpDevice,
+                storageId = storageId,
+                garminHandle = garminHandle,
+                folderName = "NewFiles"
+            )
+
+            var mtpWriteResult = ""
+
+            if (newFilesHandle == null) {
+                mtpWriteResult = "NewFiles folder not found"
+            } else {
+                // Try sendObjectInfo with minimal parameters
+                val testFileName = "_ridevault_test.gpx"
+                val testData = "<?xml version=\"1.0\"?><gpx/>".toByteArray()
+
+                // Attempt 1: FORMAT_UNDEFINED, no size
+                val info1 = MtpObjectInfo.Builder()
+                    .setStorageId(storageId)
+                    .setParent(newFilesHandle)
+                    .setFormat(MtpConstants.FORMAT_UNDEFINED)
+                    .setName(testFileName)
+                    .build()
+                val result1 = mtpDevice.sendObjectInfo(info1)
+
+                if (result1 != null) {
+                    // sendObjectInfo succeeded! Try sending the actual data
+                    val handle1 = result1.objectHandle
+                    val tempFile = java.io.File(cacheDir, testFileName)
+                    try {
+                        tempFile.writeBytes(testData)
+                        val fd = android.os.ParcelFileDescriptor.open(
+                            tempFile,
+                            android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                        )
+                        val sent = mtpDevice.sendObject(
+                            handle1,
+                            testData.size.toLong(),
+                            fd
+                        )
+                        fd.close()
+
+                        if (sent) {
+                            // Clean up test file on Garmin
+                            mtpDevice.deleteObject(handle1)
+                            mtpWriteResult = "MTP WRITE WORKS! sendObjectInfo+sendObject OK"
+                        } else {
+                            mtpDevice.deleteObject(handle1)
+                            mtpWriteResult = "sendObjectInfo OK but sendObject failed"
+                        }
+                    } finally {
+                        tempFile.delete()
+                    }
+                } else {
+                    // Attempt 2: FORMAT_TEXT, with size
+                    val info2 = MtpObjectInfo.Builder()
+                        .setStorageId(storageId)
+                        .setParent(newFilesHandle)
+                        .setFormat(MtpConstants.FORMAT_TEXT)
+                        .setCompressedSize(testData.size.toLong())
+                        .setName(testFileName)
+                        .build()
+                    val result2 = mtpDevice.sendObjectInfo(info2)
+
+                    if (result2 != null) {
+                        mtpDevice.deleteObject(result2.objectHandle)
+                        mtpWriteResult = "sendObjectInfo OK with FORMAT_TEXT+size"
+                    } else {
+                        // Attempt 3: Try Courses folder instead
+                        if (coursesHandle != null) {
+                            val info3 = MtpObjectInfo.Builder()
+                                .setStorageId(storageId)
+                                .setParent(coursesHandle)
+                                .setFormat(MtpConstants.FORMAT_UNDEFINED)
+                                .setName(testFileName)
+                                .build()
+                            val result3 = mtpDevice.sendObjectInfo(info3)
+
+                            if (result3 != null) {
+                                mtpDevice.deleteObject(result3.objectHandle)
+                                mtpWriteResult = "sendObjectInfo OK in Courses folder!"
+                            } else {
+                                // Attempt 4: Try root of storage (parent = 0 or -1)
+                                val info4a = MtpObjectInfo.Builder()
+                                    .setStorageId(storageId)
+                                    .setParent(0)
+                                    .setFormat(MtpConstants.FORMAT_UNDEFINED)
+                                    .setName(testFileName)
+                                    .build()
+                                val result4a = mtpDevice.sendObjectInfo(info4a)
+
+                                if (result4a != null) {
+                                    mtpDevice.deleteObject(result4a.objectHandle)
+                                    mtpWriteResult = "sendObjectInfo OK at root (parent=0)"
+                                } else {
+                                    mtpWriteResult = "sendObjectInfo null in ALL locations"
+                                }
+                            }
+                        } else {
+                            mtpWriteResult = "sendObjectInfo null (NewFiles); no Courses to try"
+                        }
+                    }
+                }
+            }
+
+            runOnUiThread {
+                this.mtpWriteResult = mtpWriteResult
+            }
+
+            val baseSummary = if (unreadableTotal == 0) {
                 "Loaded ${fitFiles.size} activities " +
                         "and ${courseFiles.size} courses"
             } else {
@@ -1713,6 +1777,8 @@ class MainActivity : ComponentActivity() {
                         "and ${courseFiles.size} courses; " +
                         "$unreadableTotal objects could not be read"
             }
+
+            return "$baseSummary | Write: $mtpWriteResult"
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"

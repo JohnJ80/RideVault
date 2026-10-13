@@ -127,7 +127,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.29",
+                        text = "Rev 0.0.30",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -312,7 +312,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.29",
+                        text = "Rev 0.0.30",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -513,7 +513,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.29",
+                        text = "Rev 0.0.30",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -747,7 +747,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.29",
+                        text = "Rev 0.0.30",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -1144,10 +1144,11 @@ fun RideVaultHome(
     if (rwgpsSendCompleteCount > 0) {
         AlertDialog(
             onDismissRequest = onDismissRwgpsSendComplete,
-            title = { Text("Routes sent") },
+            title = { Text("Routes saved") },
             text = {
                 Text(
-                    "Sent $rwgpsSendCompleteCount route(s) to Garmin Courses folder as GPX."
+                    "Saved $rwgpsSendCompleteCount route(s) as GPX to Downloads/RideVault/RWGPS-Routes/. " +
+                        "Use a file manager to copy them to the Garmin."
                 )
             },
             confirmButton = {

@@ -196,7 +196,7 @@ object RwgpsApi {
                 val bytes = gpx.toByteArray(Charsets.UTF_8)
 
                 val safeName = route.name
-                    .replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
+                    .replace(Regex("[^a-zA-Z0-9._\\-]"), "_")
                     .trim()
                     .take(80)
                 val fileName = "$safeName.gpx"

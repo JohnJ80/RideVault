@@ -387,13 +387,22 @@ class MainActivity : ComponentActivity() {
                         .setParent(coursesHandle)
                         .setName(download.fileName)
                         .setCompressedSize(download.data.size.toLong())
-                        .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
+                        .setFormat(android.mtp.MtpConstants.FORMAT_TEXT)
                         .build()
 
-                    val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                    // Retry sendObjectInfo — Garmin MTP can be slow
+                    var sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                    var sendRetry = 0
+                    while (sentInfo == null && sendRetry < 3) {
+                        Thread.sleep(200)
+                        sendRetry++
+                        sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                    }
                     if (sentInfo == null) {
                         runOnUiThread {
-                            rwgpsSendStatus = "Failed to create file on Garmin"
+                            rwgpsSendStatus =
+                                "Failed to create ${download.fileName} " +
+                                "(${download.data.size} bytes) on Garmin"
                             rwgpsSendBusy = false
                         }
                         return@thread
@@ -543,10 +552,16 @@ class MainActivity : ComponentActivity() {
                             .setParent(coursesHandle)
                             .setName(download.fileName)
                             .setCompressedSize(download.data.size.toLong())
-                            .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
+                            .setFormat(android.mtp.MtpConstants.FORMAT_TEXT)
                             .build()
 
-                        val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                        var sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                        var sendRetry = 0
+                        while (sentInfo == null && sendRetry < 3) {
+                            Thread.sleep(200)
+                            sendRetry++
+                            sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                        }
                         if (sentInfo == null) {
                             errors.add("${download.fileName}: failed to create on device")
                             continue

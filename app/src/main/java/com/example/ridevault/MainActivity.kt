@@ -9,7 +9,6 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.provider.DocumentsContract
-import android.mtp.MtpConstants
 import android.mtp.MtpDevice
 import android.mtp.MtpObjectInfo
 import android.os.Build
@@ -67,7 +66,6 @@ class MainActivity : ComponentActivity() {
     private var rwgpsSendStatus by mutableStateOf("")
     private var rwgpsSendBusy by mutableStateOf(false)
     private var rwgpsSendCompleteCount by mutableIntStateOf(0)
-    private var mtpWriteResult by mutableStateOf("")
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -1777,123 +1775,7 @@ class MainActivity : ComponentActivity() {
                 unreadableCount +
                         unreadableCourseCount
 
-            // ── MTP Write Test ──────────────────────────
-            // Try to write a small test file to NewFiles folder
-            // to diagnose MTP write support on this device
-            runOnUiThread {
-                mtpStatus = "Testing MTP write capability..."
-            }
-
-            val newFilesHandle = findGarminChildFolderHandle(
-                mtpDevice = mtpDevice,
-                storageId = storageId,
-                garminHandle = garminHandle,
-                folderName = "NewFiles"
-            )
-
-            var mtpWriteResult = ""
-
-            if (newFilesHandle == null) {
-                mtpWriteResult = "NewFiles folder not found"
-            } else {
-                // Try sendObjectInfo with minimal parameters
-                val testFileName = "_ridevault_test.gpx"
-                val testData = "<?xml version=\"1.0\"?><gpx/>".toByteArray()
-
-                // Attempt 1: FORMAT_UNDEFINED, no size
-                val info1 = MtpObjectInfo.Builder()
-                    .setStorageId(storageId)
-                    .setParent(newFilesHandle)
-                    .setFormat(MtpConstants.FORMAT_UNDEFINED)
-                    .setName(testFileName)
-                    .build()
-                val result1 = mtpDevice.sendObjectInfo(info1)
-
-                if (result1 != null) {
-                    // sendObjectInfo succeeded! Try sending the actual data
-                    val handle1 = result1.objectHandle
-                    val tempFile = java.io.File(cacheDir, testFileName)
-                    try {
-                        tempFile.writeBytes(testData)
-                        val fd = android.os.ParcelFileDescriptor.open(
-                            tempFile,
-                            android.os.ParcelFileDescriptor.MODE_READ_ONLY
-                        )
-                        val sent = mtpDevice.sendObject(
-                            handle1,
-                            testData.size.toLong(),
-                            fd
-                        )
-                        fd.close()
-
-                        if (sent) {
-                            // Clean up test file on Garmin
-                            mtpDevice.deleteObject(handle1)
-                            mtpWriteResult = "MTP WRITE WORKS! sendObjectInfo+sendObject OK"
-                        } else {
-                            mtpDevice.deleteObject(handle1)
-                            mtpWriteResult = "sendObjectInfo OK but sendObject failed"
-                        }
-                    } finally {
-                        tempFile.delete()
-                    }
-                } else {
-                    // Attempt 2: FORMAT_TEXT, with size
-                    val info2 = MtpObjectInfo.Builder()
-                        .setStorageId(storageId)
-                        .setParent(newFilesHandle)
-                        .setFormat(MtpConstants.FORMAT_TEXT)
-                        .setCompressedSize(testData.size.toLong())
-                        .setName(testFileName)
-                        .build()
-                    val result2 = mtpDevice.sendObjectInfo(info2)
-
-                    if (result2 != null) {
-                        mtpDevice.deleteObject(result2.objectHandle)
-                        mtpWriteResult = "sendObjectInfo OK with FORMAT_TEXT+size"
-                    } else {
-                        // Attempt 3: Try Courses folder instead
-                        if (coursesHandle != null) {
-                            val info3 = MtpObjectInfo.Builder()
-                                .setStorageId(storageId)
-                                .setParent(coursesHandle)
-                                .setFormat(MtpConstants.FORMAT_UNDEFINED)
-                                .setName(testFileName)
-                                .build()
-                            val result3 = mtpDevice.sendObjectInfo(info3)
-
-                            if (result3 != null) {
-                                mtpDevice.deleteObject(result3.objectHandle)
-                                mtpWriteResult = "sendObjectInfo OK in Courses folder!"
-                            } else {
-                                // Attempt 4: Try root of storage (parent = 0 or -1)
-                                val info4a = MtpObjectInfo.Builder()
-                                    .setStorageId(storageId)
-                                    .setParent(0)
-                                    .setFormat(MtpConstants.FORMAT_UNDEFINED)
-                                    .setName(testFileName)
-                                    .build()
-                                val result4a = mtpDevice.sendObjectInfo(info4a)
-
-                                if (result4a != null) {
-                                    mtpDevice.deleteObject(result4a.objectHandle)
-                                    mtpWriteResult = "sendObjectInfo OK at root (parent=0)"
-                                } else {
-                                    mtpWriteResult = "sendObjectInfo null in ALL locations"
-                                }
-                            }
-                        } else {
-                            mtpWriteResult = "sendObjectInfo null (NewFiles); no Courses to try"
-                        }
-                    }
-                }
-            }
-
-            runOnUiThread {
-                this.mtpWriteResult = mtpWriteResult
-            }
-
-            val baseSummary = if (unreadableTotal == 0) {
+            return if (unreadableTotal == 0) {
                 "Loaded ${fitFiles.size} activities " +
                         "and ${courseFiles.size} courses"
             } else {
@@ -1901,8 +1783,6 @@ class MainActivity : ComponentActivity() {
                         "and ${courseFiles.size} courses; " +
                         "$unreadableTotal objects could not be read"
             }
-
-            return "$baseSummary | Write: $mtpWriteResult"
 
         } catch (e: Exception) {
             return "MTP exception: ${e.javaClass.simpleName}"

@@ -19,7 +19,7 @@ class RawMtpSession(
     private val connection: UsbDeviceConnection,
     private val bulkOut: UsbEndpoint,
     private val bulkIn: UsbEndpoint,
-    private val timeout: Int = 5000
+    private val timeout: Int = 10000
 ) {
     private var transactionId = 1
 
@@ -382,7 +382,12 @@ class RawMtpSession(
         transactionId++
 
         if (infoResponse.code != RESP_OK) {
-            return false to "SendObjectInfo failed: 0x${infoResponse.code.toString(16)}"
+            val detail = if (infoResponse.type == -1) {
+                "no response (timeout or read error)"
+            } else {
+                "type=${infoResponse.type} code=0x${infoResponse.code.toString(16)}"
+            }
+            return false to "SendObjectInfo failed: $detail"
         }
 
         // Extract the assigned object handle from response params

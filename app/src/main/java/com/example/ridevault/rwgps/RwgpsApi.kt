@@ -154,19 +154,19 @@ object RwgpsApi {
     // ── Route file download ──────────────────────────────────
 
     /**
-     * Download a route as a FIT Course file.
+     * Download a route as a GPX file.
      *
-     * Uses the web download URL pattern: /routes/{id}.fit_course
-     * with Bearer auth. Falls back to trying the .json endpoint
-     * and returning track_points if the file download fails.
+     * Fetches the route JSON with track_points from the API,
+     * then builds a GPX file from the coordinates. The Edge 1050
+     * loads GPX files placed in Garmin/Courses as courses.
      */
-    suspend fun downloadRouteFitCourse(
+    suspend fun downloadRouteGpx(
         accessToken: String,
         route: RouteSummary
     ): Pair<String, RouteDownload?> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
-                .url("$WEB_BASE/routes/${route.id}.fit_course")
+                .url("$BASE/routes/${route.id}.json")
                 .header("Authorization", "Bearer $accessToken")
                 .build()
 
@@ -177,19 +177,29 @@ object RwgpsApi {
                     ) to null
                 }
 
-                val bytes = response.body?.bytes()
+                val body = response.body?.string()
                     ?: return@withContext "Empty response body" to null
+                val json = JSONObject(body)
 
-                if (bytes.size < 12) {
-                    return@withContext "Downloaded file too small (${bytes.size} bytes)" to null
+                // The route object may be at top level or under "route"
+                val routeObj = json.optJSONObject("route") ?: json
+
+                val trackPoints = routeObj.optJSONArray("track_points")
+                if (trackPoints == null || trackPoints.length() == 0) {
+                    return@withContext "No track points in route" to null
                 }
 
-                // Sanitize route name for filename
+                // Also grab course_points for turn-by-turn cues
+                val coursePoints = routeObj.optJSONArray("course_points")
+
+                val gpx = buildGpx(route.name, trackPoints, coursePoints)
+                val bytes = gpx.toByteArray(Charsets.UTF_8)
+
                 val safeName = route.name
                     .replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
                     .trim()
                     .take(80)
-                val fileName = "$safeName.fit"
+                val fileName = "$safeName.gpx"
 
                 "OK" to RouteDownload(
                     routeId = route.id,
@@ -200,5 +210,101 @@ object RwgpsApi {
         } catch (e: Exception) {
             "${e.javaClass.simpleName}: ${e.message}" to null
         }
+    }
+
+    private fun buildGpx(
+        name: String,
+        trackPoints: org.json.JSONArray,
+        coursePoints: org.json.JSONArray?
+    ): String {
+        val sb = StringBuilder()
+        sb.appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
+        sb.appendLine("""<gpx version="1.1" creator="RideVault"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">""")
+
+        // Metadata
+        sb.appendLine("  <metadata>")
+        sb.appendLine("    <name>${escapeXml(name)}</name>")
+        sb.appendLine("  </metadata>")
+
+        // Route waypoints from course_points (turn-by-turn cues)
+        if (coursePoints != null && coursePoints.length() > 0) {
+            for (i in 0 until coursePoints.length()) {
+                val cp = coursePoints.getJSONObject(i)
+                val lat = cp.optDouble("lat", Double.NaN)
+                val lng = cp.optDouble("lng", Double.NaN)
+                if (lat.isNaN() || lng.isNaN()) continue
+
+                val cpName = cp.optString("name", "")
+                val cpType = cp.optString("type", "")
+                // Map RWGPS cue types to Garmin-recognized types
+                val garminType = mapCueType(cpType)
+
+                sb.appendLine("""  <wpt lat="$lat" lon="$lng">""")
+                if (cpName.isNotBlank()) {
+                    sb.appendLine("    <name>${escapeXml(cpName)}</name>")
+                }
+                if (garminType.isNotBlank()) {
+                    sb.appendLine("    <type>$garminType</type>")
+                }
+                sb.appendLine("  </wpt>")
+            }
+        }
+
+        // Track with trackpoints
+        sb.appendLine("  <trk>")
+        sb.appendLine("    <name>${escapeXml(name)}</name>")
+        sb.appendLine("    <trkseg>")
+
+        for (i in 0 until trackPoints.length()) {
+            val pt = trackPoints.getJSONObject(i)
+            val lat = pt.optDouble("y", Double.NaN)
+            val lng = pt.optDouble("x", Double.NaN)
+            if (lat.isNaN() || lng.isNaN()) continue
+
+            val ele = pt.optDouble("e", Double.NaN)
+            sb.append("""      <trkpt lat="$lat" lon="$lng">""")
+            if (!ele.isNaN()) {
+                sb.append("<ele>$ele</ele>")
+            }
+            sb.appendLine("</trkpt>")
+        }
+
+        sb.appendLine("    </trkseg>")
+        sb.appendLine("  </trk>")
+        sb.appendLine("</gpx>")
+        return sb.toString()
+    }
+
+    private fun mapCueType(rwgpsType: String): String {
+        return when (rwgpsType.lowercase()) {
+            "left" -> "Left"
+            "right" -> "Right"
+            "straight" -> "Straight"
+            "sharp left" -> "Sharp Left"
+            "sharp right" -> "Sharp Right"
+            "slight left" -> "Slight Left"
+            "slight right" -> "Slight Right"
+            "u-turn" -> "U-Turn"
+            "summit" -> "Summit"
+            "valley" -> "Valley"
+            "water" -> "Water"
+            "food" -> "Food"
+            "danger" -> "Danger"
+            "generic" -> "Generic"
+            "first aid" -> "First Aid"
+            else -> "Generic"
+        }
+    }
+
+    private fun escapeXml(text: String): String {
+        return text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
     }
 }

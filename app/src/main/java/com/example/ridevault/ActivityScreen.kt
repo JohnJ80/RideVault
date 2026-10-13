@@ -66,6 +66,7 @@ fun RideVaultHome(
     onSelectRwgpsCollection: (RwgpsApi.CollectionSummary) -> Unit = {},
     onBackFromRwgpsRoutes: () -> Unit = {},
     onSendRouteToGarmin: (RwgpsApi.RouteSummary) -> Unit = {},
+    onSendAllRoutesToGarmin: () -> Unit = {},
     onDismissRwgpsSendComplete: () -> Unit = {}
 ) {
     var selectedFile by remember {
@@ -126,7 +127,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.27",
+                        text = "Rev 0.0.28",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -311,7 +312,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.27",
+                        text = "Rev 0.0.28",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -512,7 +513,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.27",
+                        text = "Rev 0.0.28",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -553,6 +554,17 @@ fun RideVaultHome(
                             style =
                                 MaterialTheme.typography.bodyMedium
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (rwgpsRoutes.isNotEmpty() && !rwgpsBusy) {
+                        Button(
+                            onClick = onSendAllRoutesToGarmin,
+                            enabled = !rwgpsSendBusy,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Send All ${rwgpsRoutes.size} Routes to Garmin")
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
@@ -731,7 +743,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.27",
+                        text = "Rev 0.0.28",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -1128,10 +1140,10 @@ fun RideVaultHome(
     if (rwgpsSendCompleteCount > 0) {
         AlertDialog(
             onDismissRequest = onDismissRwgpsSendComplete,
-            title = { Text("Route sent") },
+            title = { Text("Routes sent") },
             text = {
                 Text(
-                    "Sent $rwgpsSendCompleteCount route(s) to Garmin Courses folder."
+                    "Sent $rwgpsSendCompleteCount route(s) to Garmin Courses folder as GPX."
                 )
             },
             confirmButton = {

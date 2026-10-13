@@ -232,6 +232,9 @@ class MainActivity : ComponentActivity() {
                     onSendRouteToGarmin = { route ->
                         sendRwgpsRouteToGarmin(route)
                     },
+                    onSendAllRoutesToGarmin = {
+                        sendAllRwgpsRoutesToGarmin()
+                    },
                     onDismissRwgpsSendComplete = {
                         rwgpsSendCompleteCount = 0
                     }
@@ -325,11 +328,11 @@ class MainActivity : ComponentActivity() {
 
         thread {
             try {
-                // Step 1: Download the FIT Course file from RWGPS
+                // Step 1: Download the route as GPX from RWGPS
                 var downloadResult: Pair<String, RwgpsApi.RouteDownload?> = "" to null
                 val latch = java.util.concurrent.CountDownLatch(1)
                 lifecycleScope.launch {
-                    downloadResult = RwgpsApi.downloadRouteFitCourse(token, route)
+                    downloadResult = RwgpsApi.downloadRouteGpx(token, route)
                     latch.countDown()
                 }
                 latch.await()
@@ -397,7 +400,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // Write bytes to a temp file for ParcelFileDescriptor
-                    val tempFile = java.io.File(cacheDir, "rwgps_temp.fit")
+                    val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
                     try {
                         tempFile.writeBytes(download.data)
 
@@ -425,6 +428,164 @@ class MainActivity : ComponentActivity() {
                         }
                     } finally {
                         tempFile.delete()
+                    }
+                } finally {
+                    try { mtpDevice.close() } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    rwgpsSendStatus = "${e.javaClass.simpleName}: ${e.message}"
+                    rwgpsSendBusy = false
+                }
+            }
+        }
+    }
+
+    private fun sendAllRwgpsRoutesToGarmin() {
+        val token = RwgpsAuth.getAccessToken(this) ?: return
+        val device = connectedDevice ?: run {
+            rwgpsSendStatus = "No Garmin connected"
+            return
+        }
+        if (!hasUsbPermission) {
+            rwgpsSendStatus = "USB permission required"
+            return
+        }
+        val routes = rwgpsRoutes
+        if (routes.isEmpty()) {
+            rwgpsSendStatus = "No routes to send"
+            return
+        }
+
+        rwgpsSendBusy = true
+        rwgpsSendStatus = "Downloading ${routes.size} routes..."
+
+        thread {
+            try {
+                // Step 1: Download all routes as GPX
+                val downloads = mutableListOf<RwgpsApi.RouteDownload>()
+                val errors = mutableListOf<String>()
+
+                for ((index, route) in routes.withIndex()) {
+                    runOnUiThread {
+                        rwgpsSendStatus =
+                            "Downloading ${index + 1} of ${routes.size}: ${route.name}..."
+                    }
+
+                    var downloadResult: Pair<String, RwgpsApi.RouteDownload?> = "" to null
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    lifecycleScope.launch {
+                        downloadResult = RwgpsApi.downloadRouteGpx(token, route)
+                        latch.countDown()
+                    }
+                    latch.await()
+
+                    val (dlStatus, download) = downloadResult
+                    if (download != null) {
+                        downloads.add(download)
+                    } else {
+                        errors.add("${route.name}: $dlStatus")
+                    }
+                }
+
+                if (downloads.isEmpty()) {
+                    runOnUiThread {
+                        rwgpsSendStatus = "All downloads failed"
+                        rwgpsSendBusy = false
+                    }
+                    return@thread
+                }
+
+                // Step 2: Open MTP and push all files to Courses folder
+                runOnUiThread {
+                    rwgpsSendStatus = "Connecting to Garmin..."
+                }
+
+                val mtpDevice = MtpDevice(device)
+                val usbDeviceConnection = usbManager.openDevice(device)
+                if (usbDeviceConnection == null || !mtpDevice.open(usbDeviceConnection)) {
+                    runOnUiThread {
+                        rwgpsSendStatus = "Could not open MTP connection"
+                        rwgpsSendBusy = false
+                    }
+                    return@thread
+                }
+
+                try {
+                    val storageIds = mtpDevice.storageIds
+                    if (storageIds == null || storageIds.isEmpty()) {
+                        runOnUiThread {
+                            rwgpsSendStatus = "No storage found on Garmin"
+                            rwgpsSendBusy = false
+                        }
+                        return@thread
+                    }
+
+                    val storageId = storageIds[0]
+                    val coursesHandle = findCoursesFolderHandle(mtpDevice, storageId)
+                    if (coursesHandle == null) {
+                        runOnUiThread {
+                            rwgpsSendStatus = "Courses folder not found on Garmin"
+                            rwgpsSendBusy = false
+                        }
+                        return@thread
+                    }
+
+                    var sentCount = 0
+                    for ((index, download) in downloads.withIndex()) {
+                        runOnUiThread {
+                            rwgpsSendStatus =
+                                "Sending ${index + 1} of ${downloads.size}: ${download.fileName}..."
+                        }
+
+                        val objectInfo = MtpObjectInfo.Builder()
+                            .setStorageId(storageId)
+                            .setParent(coursesHandle)
+                            .setName(download.fileName)
+                            .setCompressedSize(download.data.size.toLong())
+                            .setFormat(android.mtp.MtpConstants.FORMAT_UNDEFINED)
+                            .build()
+
+                        val sentInfo = mtpDevice.sendObjectInfo(objectInfo)
+                        if (sentInfo == null) {
+                            errors.add("${download.fileName}: failed to create on device")
+                            continue
+                        }
+
+                        val tempFile = java.io.File(cacheDir, "rwgps_temp.gpx")
+                        try {
+                            tempFile.writeBytes(download.data)
+
+                            val pfd = android.os.ParcelFileDescriptor.open(
+                                tempFile,
+                                android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                            )
+
+                            val success = pfd.use {
+                                mtpDevice.sendObject(
+                                    sentInfo.objectHandle,
+                                    download.data.size.toLong(),
+                                    it
+                                )
+                            }
+
+                            if (success) {
+                                sentCount++
+                            } else {
+                                errors.add("${download.fileName}: send failed")
+                            }
+                        } finally {
+                            tempFile.delete()
+                        }
+                    }
+
+                    runOnUiThread {
+                        val errorSuffix = if (errors.isNotEmpty()) {
+                            " (${errors.size} failed)"
+                        } else ""
+                        rwgpsSendStatus = "Sent $sentCount of ${routes.size} routes$errorSuffix"
+                        rwgpsSendCompleteCount += sentCount
+                        rwgpsSendBusy = false
                     }
                 } finally {
                     try { mtpDevice.close() } catch (_: Exception) {}
@@ -818,7 +979,9 @@ class MainActivity : ComponentActivity() {
             .toList()
             .mapNotNull { handle ->
                 getMtpObjectInfoWithRetry(mtpDevice, handle)?.let { info ->
-                    if (info.name.endsWith(".fit", ignoreCase = true)) {
+                    if (info.name.endsWith(".fit", ignoreCase = true) ||
+                        info.name.endsWith(".gpx", ignoreCase = true)
+                    ) {
                         CourseFileInfo(
                             handle = handle,
                             name = info.name,

@@ -1,56 +1,58 @@
 # RideVault
 
-Garmin Edge backup, recovery, and storage management for Android.
+Garmin Edge backup, recovery, and storage management for Android — with Strava and Ride with GPS integration.
 
-## Norway MVP
+## Features
 
 ### Activities
 
 - Detect and connect to a Garmin Edge 1050 over USB/MTP.
 - Enumerate FIT files from `Garmin/Activities`.
-- Display activities newest first using:
-  - Timestamp as `YYYY-MM-DD HH:MM:SS`
-  - File size on the same line
-- Keep the full `.fit` filename hidden from the main list.
+- Display activities newest first with filename and file size.
 - On activity selection, offer:
-  - Download
-  - Download this activity and all newer activities
-  - Display filename
-- Show the complete original filename when requested so it can be verified on the Moto or Mac.
+  - **Download** — copy the .FIT file to Downloads/RideVault/Activities/
+  - **Download this + newer** — batch download from the selected activity forward
+  - **Send to Strava** — upload the .FIT file directly to Strava (requires Strava login)
+  - **Delete this + older** — remove the selected activity and everything before it
 
 ### Activity cleanup
 
 - Select an activity as a chronological boundary.
-- Keep the selected activity and all newer activities.
-- Delete all older activities.
-- Before deletion, preview:
-  - Number kept
-  - Number deleted
-  - Oldest and newest dates being deleted
-  - Estimated storage reclaimed
-- Require explicit confirmation.
+- Delete all older activities from the Garmin.
+- Require explicit confirmation before deletion.
 
 ### Courses
 
-- List courses.
-- Back up one course.
-- Back up all courses.
-- Delete one course.
-- Delete all courses.
+- List courses from `Garmin/Courses`.
+- Back up one course or all courses to Downloads/RideVault/Courses/.
+- Delete one course or all courses from the Garmin.
 - Require confirmation for destructive actions.
 
-## Deferred until after Norway
+### Strava integration
 
-- Map management
-- FIT parsing for distance, duration, elevation, or ride titles
-- Cloud sync
-- Multi-device support
-- Nonessential UI polish
+- OAuth2 login with automatic token refresh.
+- Upload .FIT activity files directly from the Garmin to Strava.
+- Duplicate activity detection.
+- Upload progress and processing status feedback.
+- Success/failure confirmation dialog.
+
+### Ride with GPS integration
+
+- OAuth2 login.
+- Browse RWGPS collections and routes.
+- Download routes as GPX and save to Downloads/RideVault/RWGPS-Routes/.
+- Send individual routes or entire collections.
+
+## Technical notes
+
+- Garmin Edge 1050 blocks MTP writes from Android phones — course/route files are saved to Downloads instead and can be copied to the Garmin via a file manager.
+- MTP reads work reliably with retry logic for transient failures.
+- OAuth tokens stored in EncryptedSharedPreferences.
+- Downloads use MediaStore (no special permissions needed on Android 10+).
+- File integrity verified by size comparison after MTP transfer.
 
 ## Design principles
 
-- Norway first.
-- Perfect is the enemy of good.
 - Prefer small, working, testable increments.
 - Keep the repository recoverable.
 - Do not expose USB or MTP details in the normal UI.
@@ -59,12 +61,6 @@ Garmin Edge backup, recovery, and storage management for Android.
 - Preview destructive operations.
 - Verify copied files before reporting success.
 
-## Current status
+## Current version
 
-- USB detection and permission: working
-- MTP session with retries: working
-- Garmin storage traversal: working
-- FIT enumeration and metadata: working
-- Activity list UI: next
-- Single-file download: next after the list
-- Range download and activity cleanup: after single-file download
+0.0.40

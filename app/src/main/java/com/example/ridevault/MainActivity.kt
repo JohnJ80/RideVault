@@ -64,6 +64,8 @@ class MainActivity : ComponentActivity() {
     private var stravaStatus by mutableStateOf("")
     private var stravaUploadBusy by mutableStateOf(false)
     private var stravaUploadStatus by mutableStateOf("")
+    private var stravaUploadComplete by mutableStateOf(false)
+    private var stravaUploadSuccess by mutableStateOf(false)
 
     private var rwgpsLoggedIn by mutableStateOf(false)
     private var rwgpsStatus by mutableStateOf("")
@@ -216,6 +218,12 @@ class MainActivity : ComponentActivity() {
                     stravaStatus = stravaStatus,
                     stravaUploadBusy = stravaUploadBusy,
                     stravaUploadStatus = stravaUploadStatus,
+                    stravaUploadComplete = stravaUploadComplete,
+                    stravaUploadSuccess = stravaUploadSuccess,
+                    onDismissStravaUploadComplete = {
+                        stravaUploadComplete = false
+                        stravaUploadStatus = ""
+                    },
                     onStravaLogout = {
                         StravaAuth.clearToken(this@MainActivity)
                         stravaLoggedIn = false
@@ -344,6 +352,8 @@ class MainActivity : ComponentActivity() {
                 )
 
                 stravaUploadStatus = result.message
+                stravaUploadSuccess = result.success
+                stravaUploadComplete = true
                 stravaUploadBusy = false
             } catch (e: Exception) {
                 stravaUploadStatus = "${e.javaClass.simpleName}: ${e.message}"

@@ -57,6 +57,9 @@ fun RideVaultHome(
     stravaStatus: String = "",
     stravaUploadBusy: Boolean = false,
     stravaUploadStatus: String = "",
+    stravaUploadComplete: Boolean = false,
+    stravaUploadSuccess: Boolean = false,
+    onDismissStravaUploadComplete: () -> Unit = {},
     onStravaLogout: () -> Unit = {},
     onSendActivityToStrava: (FitFileInfo) -> Unit = {},
     rwgpsLoggedIn: Boolean = false,
@@ -1171,6 +1174,26 @@ fun RideVaultHome(
             text = { Text("Deleted $courseDeleteCompleteCount courses.") },
             confirmButton = {
                 TextButton(onClick = onDismissCourseDeleteComplete) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    if (stravaUploadComplete) {
+        AlertDialog(
+            onDismissRequest = onDismissStravaUploadComplete,
+            title = {
+                Text(
+                    if (stravaUploadSuccess) "Uploaded to Strava"
+                    else "Strava upload failed"
+                )
+            },
+            text = {
+                Text(stravaUploadStatus)
+            },
+            confirmButton = {
+                TextButton(onClick = onDismissStravaUploadComplete) {
                     Text("OK")
                 }
             }

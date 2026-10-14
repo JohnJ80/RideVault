@@ -22,6 +22,9 @@ import com.example.ridevault.ui.theme.RideVaultTheme
 import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsAuth
 import com.example.ridevault.rwgps.handleRwgpsRedirect
+import com.example.ridevault.strava.StravaApi
+import com.example.ridevault.strava.StravaAuth
+import com.example.ridevault.strava.handleStravaRedirect
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlin.concurrent.thread
@@ -55,6 +58,12 @@ class MainActivity : ComponentActivity() {
     private var courseDeleteBusy by mutableStateOf(false)
     private var courseDeleteStatus by mutableStateOf("")
     private var courseDeleteCompleteCount by mutableIntStateOf(0)
+
+    private var stravaLoggedIn by mutableStateOf(false)
+    private var stravaAthleteName by mutableStateOf("")
+    private var stravaStatus by mutableStateOf("")
+    private var stravaUploadBusy by mutableStateOf(false)
+    private var stravaUploadStatus by mutableStateOf("")
 
     private var rwgpsLoggedIn by mutableStateOf(false)
     private var rwgpsStatus by mutableStateOf("")
@@ -120,6 +129,8 @@ class MainActivity : ComponentActivity() {
         refreshUsbState()
 
         rwgpsLoggedIn = RwgpsAuth.isLoggedIn(this)
+        stravaLoggedIn = StravaAuth.isLoggedIn(this)
+        stravaAthleteName = StravaAuth.getAthleteName(this)
 
         handleOauthRedirect(intent)
 
@@ -200,6 +211,20 @@ class MainActivity : ComponentActivity() {
                     onDismissCourseDeleteComplete = {
                         courseDeleteCompleteCount = 0
                     },
+                    stravaLoggedIn = stravaLoggedIn,
+                    stravaAthleteName = stravaAthleteName,
+                    stravaStatus = stravaStatus,
+                    stravaUploadBusy = stravaUploadBusy,
+                    stravaUploadStatus = stravaUploadStatus,
+                    onStravaLogout = {
+                        StravaAuth.clearToken(this@MainActivity)
+                        stravaLoggedIn = false
+                        stravaAthleteName = ""
+                        stravaStatus = ""
+                    },
+                    onSendActivityToStrava = { file ->
+                        uploadActivityToStrava(file)
+                    },
                     rwgpsLoggedIn = rwgpsLoggedIn,
                     rwgpsStatus = rwgpsStatus,
                     onRwgpsLogout = {
@@ -252,15 +277,104 @@ class MainActivity : ComponentActivity() {
         val data = intent?.data ?: return
         if (data.scheme != "ridevault") return
 
-        rwgpsStatus = "Exchanging authorization code..."
-        lifecycleScope.launch {
-            val (success, message) = handleRwgpsRedirect(this@MainActivity, intent)
-            if (success) {
-                rwgpsLoggedIn = true
-                rwgpsStatus = ""
-            } else {
-                rwgpsStatus = "RWGPS login failed: $message"
+        when (data.host) {
+            "strava" -> {
+                stravaStatus = "Exchanging authorization code..."
+                lifecycleScope.launch {
+                    val (success, message) = handleStravaRedirect(this@MainActivity, intent)
+                    if (success) {
+                        stravaLoggedIn = true
+                        stravaAthleteName = StravaAuth.getAthleteName(this@MainActivity)
+                        stravaStatus = ""
+                    } else {
+                        stravaStatus = "Strava login failed: $message"
+                    }
+                }
             }
+            "oauth" -> {
+                rwgpsStatus = "Exchanging authorization code..."
+                lifecycleScope.launch {
+                    val (success, message) = handleRwgpsRedirect(this@MainActivity, intent)
+                    if (success) {
+                        rwgpsLoggedIn = true
+                        rwgpsStatus = ""
+                    } else {
+                        rwgpsStatus = "RWGPS login failed: $message"
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Strava upload ─────────────────────────────────────────
+
+    private fun uploadActivityToStrava(file: FitFileInfo) {
+        if (stravaUploadBusy) return
+
+        stravaUploadBusy = true
+        stravaUploadStatus = "Reading ${file.name} from Garmin..."
+
+        lifecycleScope.launch {
+            try {
+                // Read the .FIT file from Garmin via MTP
+                val fitData = readFitFileFromGarmin(file)
+                if (fitData == null) {
+                    stravaUploadStatus = "Could not read ${file.name} from Garmin"
+                    stravaUploadBusy = false
+                    return@launch
+                }
+
+                val accessToken = StravaAuth.getValidAccessToken(this@MainActivity)
+                if (accessToken == null) {
+                    stravaUploadStatus = "Strava login expired — please log in again"
+                    stravaLoggedIn = false
+                    stravaUploadBusy = false
+                    return@launch
+                }
+
+                val result = StravaApi.uploadFitFile(
+                    accessToken = accessToken,
+                    fileName = file.name,
+                    fitData = fitData,
+                    onStatus = { status ->
+                        runOnUiThread {
+                            stravaUploadStatus = status
+                        }
+                    }
+                )
+
+                stravaUploadStatus = result.message
+                stravaUploadBusy = false
+            } catch (e: Exception) {
+                stravaUploadStatus = "${e.javaClass.simpleName}: ${e.message}"
+                stravaUploadBusy = false
+            }
+        }
+    }
+
+    /**
+     * Read a .FIT file from the Garmin via MTP and return its bytes.
+     * Returns null if the read fails.
+     */
+    private fun readFitFileFromGarmin(file: FitFileInfo): ByteArray? {
+        val device = connectedDevice ?: return null
+
+        if (!usbManager.hasPermission(device)) return null
+
+        val connection = usbManager.openDevice(device) ?: return null
+        val mtpDevice = MtpDevice(device)
+
+        try {
+            if (!mtpDevice.open(connection)) return null
+
+            // importFile reads into a ParcelFileDescriptor, but we need bytes.
+            // Use getObject which returns raw bytes for small-ish files.
+            val data = mtpDevice.getObject(file.handle, file.sizeBytes.toInt())
+            mtpDevice.close()
+            return data
+        } catch (e: Exception) {
+            try { mtpDevice.close() } catch (_: Exception) {}
+            return null
         }
     }
 

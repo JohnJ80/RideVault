@@ -41,6 +41,17 @@
                     android:path="/callback" />
             </intent-filter>
 
+            <!-- Strava OAuth callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="ridevault"
+                    android:host="strava"
+                    android:path="/callback" />
+            </intent-filter>
+
         </activity>
     </application>
 

@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.ridevault.rwgps.RwgpsApi
 import com.example.ridevault.rwgps.RwgpsLoginSection
+import com.example.ridevault.strava.StravaLoginSection
 
 @Composable
 fun RideVaultHome(
@@ -51,6 +52,13 @@ fun RideVaultHome(
     onDeleteCourse: (CourseFileInfo) -> Unit,
     onDeleteAllCourses: () -> Unit,
     onDismissCourseDeleteComplete: () -> Unit,
+    stravaLoggedIn: Boolean = false,
+    stravaAthleteName: String = "",
+    stravaStatus: String = "",
+    stravaUploadBusy: Boolean = false,
+    stravaUploadStatus: String = "",
+    onStravaLogout: () -> Unit = {},
+    onSendActivityToStrava: (FitFileInfo) -> Unit = {},
     rwgpsLoggedIn: Boolean = false,
     rwgpsStatus: String = "",
     onRwgpsLogout: () -> Unit = {},
@@ -127,7 +135,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.39",
+                        text = "Rev 0.0.40",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -140,6 +148,21 @@ fun RideVaultHome(
                     status = rwgpsStatus,
                     onLogout = onRwgpsLogout
                 )
+
+                StravaLoginSection(
+                    loggedIn = stravaLoggedIn,
+                    athleteName = stravaAthleteName,
+                    status = stravaStatus,
+                    onLogout = onStravaLogout
+                )
+
+                if (stravaUploadStatus.isNotBlank()) {
+                    Text(
+                        text = stravaUploadStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(20.dp))
 
@@ -312,7 +335,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.39",
+                        text = "Rev 0.0.40",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -513,7 +536,7 @@ fun RideVaultHome(
                     }
 
                     Text(
-                        text = "Rev 0.0.39",
+                        text = "Rev 0.0.40",
                         style =
                             MaterialTheme.typography.bodySmall
                     )
@@ -747,7 +770,7 @@ fun RideVaultHome(
                     )
 
                     Text(
-                        text = "Rev 0.0.39",
+                        text = "Rev 0.0.40",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -914,13 +937,26 @@ fun RideVaultHome(
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDownloadActivity(selectedFile!!)
-                        selectedFile = null
+                Row {
+                    TextButton(
+                        onClick = {
+                            onDownloadActivity(selectedFile!!)
+                            selectedFile = null
+                        }
+                    ) {
+                        Text("Download")
                     }
-                ) {
-                    Text("Download")
+                    if (stravaLoggedIn) {
+                        TextButton(
+                            onClick = {
+                                onSendActivityToStrava(selectedFile!!)
+                                selectedFile = null
+                            },
+                            enabled = !stravaUploadBusy
+                        ) {
+                            Text("Strava")
+                        }
+                    }
                 }
             },
             dismissButton = {

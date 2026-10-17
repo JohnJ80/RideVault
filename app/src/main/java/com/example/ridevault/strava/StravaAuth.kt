@@ -25,7 +25,9 @@ object StravaAuth {
     private const val CLIENT_SECRET = "26655914d29ef12406290fde1d4a9de8a3c71ca3"
     private const val REDIRECT_URI = "ridevault://strava-auth/callback"
 
-    private const val AUTH_URL = "https://www.strava.com/oauth/mobile/authorize"
+    // Auth goes through the Cloudflare Worker relay so both RideVault apps
+    // share the same Strava Authorization Callback Domain.
+    private const val AUTH_URL = "https://ridevault-auth.ridevaultkaroo.workers.dev/auth/ridevault"
     private const val TOKEN_URL = "https://www.strava.com/oauth/token"
 
     private const val PREFS_NAME = "strava_prefs"
@@ -37,15 +39,8 @@ object StravaAuth {
     private val http = OkHttpClient()
 
     fun getAuthorizationIntent(): Intent {
-        val uri = Uri.parse(AUTH_URL).buildUpon()
-            .appendQueryParameter("client_id", CLIENT_ID)
-            .appendQueryParameter("redirect_uri", REDIRECT_URI)
-            .appendQueryParameter("response_type", "code")
-            .appendQueryParameter("approval_prompt", "auto")
-            .appendQueryParameter("scope", "activity:write,activity:read")
-            .build()
-
-        return Intent(Intent.ACTION_VIEW, uri)
+        // The worker relay handles the Strava redirect parameters — just open it.
+        return Intent(Intent.ACTION_VIEW, Uri.parse(AUTH_URL))
     }
 
     /**

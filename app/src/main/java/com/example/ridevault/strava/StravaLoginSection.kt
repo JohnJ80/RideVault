@@ -73,7 +73,7 @@ fun StravaLoginSection(
  */
 suspend fun handleStravaRedirect(context: Context, intent: Intent?): Pair<Boolean, String> {
     val data: Uri = intent?.data ?: return false to "No intent data"
-    if (data.scheme != "ridevault" || data.host != "strava") return false to "Not a Strava redirect"
+    if (data.scheme != "ridevault" || data.host != "strava-auth") return false to "Not a Strava redirect"
 
     val code = data.getQueryParameter("code") ?: return false to "No code parameter"
     return try {

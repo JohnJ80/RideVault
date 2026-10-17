@@ -48,7 +48,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="ridevault"
-                    android:host="strava"
+                    android:host="strava-auth"
                     android:path="/callback" />
             </intent-filter>
 

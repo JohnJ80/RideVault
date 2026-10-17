@@ -23,7 +23,7 @@ object StravaAuth {
 
     private const val CLIENT_ID = "287312"
     private const val CLIENT_SECRET = "26655914d29ef12406290fde1d4a9de8a3c71ca3"
-    private const val REDIRECT_URI = "ridevault://strava/callback"
+    private const val REDIRECT_URI = "ridevault://strava-auth/callback"
 
     private const val AUTH_URL = "https://www.strava.com/oauth/mobile/authorize"
     private const val TOKEN_URL = "https://www.strava.com/oauth/token"

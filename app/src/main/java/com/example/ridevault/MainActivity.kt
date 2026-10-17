@@ -286,7 +286,7 @@ class MainActivity : ComponentActivity() {
         if (data.scheme != "ridevault") return
 
         when (data.host) {
-            "strava" -> {
+            "strava-auth" -> {
                 stravaStatus = "Exchanging authorization code..."
                 lifecycleScope.launch {
                     val (success, message) = handleStravaRedirect(this@MainActivity, intent)
